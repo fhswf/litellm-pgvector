@@ -15,7 +15,7 @@ dependencies = [
     "pydantic==2.13.4",
     "pydantic-settings==2.14.2",
     "python-dotenv==1.0.0",
-    "python-multipart==0.0.6",
+    "python-multipart==0.0.31",
     "sqlalchemy==2.0.54",
     "sqlmodel==0.0.47",
     "transformers==5.14.1; sys_platform == 'linux'",
