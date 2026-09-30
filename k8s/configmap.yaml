@@ -6,10 +6,13 @@ data:
   HOST: "0.0.0.0"
   PORT: "8000"
   EMBEDDING__MODEL: "litellm_proxy/qwen3-embedding:8b"
-  # Change this to the DNS name and port of your LiteLLM proxy Service.
-  EMBEDDING__BASE_URL: "http://litellm:4000"
+  # LiteLLM is in the separate `litellm` namespace.
+  EMBEDDING__BASE_URL: "http://litellm.litellm.svc.cluster.local:4000"
   # The PGVector column is currently fixed at 3072 dimensions in the application.
   EMBEDDING__DIMENSIONS: "3072"
+  # CNPG generates the matching application password in
+  # `litellm-pgvector-db-app`; the Deployment supplies it through PGPASSWORD.
+  DATABASE_URL: "postgresql://litellm_pgvector@litellm-pgvector-db-rw.litellm-pgvector.svc.cluster.local:5432/litellm_pgvector?schema=public"
   S3_HOST: ""
   S3_REGION: ""
   S3_BUCKET: ""

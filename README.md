@@ -153,39 +153,30 @@ The application sends embedding requests to the LiteLLM proxy and uses its key-i
 
 ## Integrate with an existing LiteLLM installation
 
-This application runs as a separate API service alongside LiteLLM. Clients send vector-store and file API requests directly to this application; LiteLLM continues to handle model requests and embedding generation. The app uses LiteLLM to validate each incoming virtual key and forwards that key when it requests embeddings.
+This application runs as a separate internal API service alongside LiteLLM. When using LiteLLM's `pg_vector` vector-store provider, clients send vector-store requests to LiteLLM and LiteLLM calls this service. The app calls LiteLLM for key validation and embedding generation. No ingress is needed for `litellm-pgvector` when LiteLLM can reach its Kubernetes Service; keep the app service as `ClusterIP`. If clients call this app directly from outside the cluster, expose it separately.
 
 Set the app's configuration to your existing LiteLLM proxy and embedding model alias:
 
 ```dotenv
-EMBEDDING__BASE_URL=http://litellm.<namespace>.svc.cluster.local:4000
+EMBEDDING__BASE_URL=http://litellm.litellm.svc.cluster.local:4000
 EMBEDDING__MODEL=litellm_proxy/<embedding-model-alias>
 EMBEDDING__DIMENSIONS=3072
 LITELLM_API_KEY=<litellm-admin-key>
 ```
 
-The `LITELLM_API_KEY` value must be allowed to call LiteLLM's `/key/info` endpoint. Keep it secret. Clients authenticate to this app with their own LiteLLM virtual keys. Configure the embedding alias in LiteLLM and ensure it returns 3072-dimensional vectors, matching the app's fixed PGVector column.
+The `LITELLM_API_KEY` value must be allowed to call LiteLLM's `/key/info` endpoint. Keep it secret. Configure LiteLLM's `pg_vector` provider to use the internal service URL `http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000` as its API base, along with a valid LiteLLM virtual key for the backend API key. The provider calls this service over cluster networking; clients continue to use LiteLLM's existing endpoint. The app scopes stores to the identity of the key LiteLLM sends to it, so use a team key when stores should be shared by that team. Configure the embedding alias in LiteLLM and ensure it returns 3072-dimensional vectors, matching the app's fixed PGVector column.
 
-The app also needs a PostgreSQL database with the `vector` extension and an S3-compatible object store for uploaded files. The database URL must include a schema query parameter, such as `?schema=public`; the database user needs permission to create the schema and extension on first startup, or an administrator must create them beforehand.
+The app also needs PostgreSQL with the `vector` extension and an S3-compatible object store for uploaded files. The Kubernetes CNPG Cluster manifest creates the database and extension. For other installations, the database URL must include a schema query parameter, such as `?schema=public`, and the database user needs permission to create the schema and extension on first startup, or an administrator must create them beforehand.
 
-In Kubernetes, the in-cluster API address is `http://litellm-pgvector.litellm.svc.cluster.local:8000`. Point vector-store clients at that service, while continuing to use the existing LiteLLM URL for chat and embedding API calls. For example:
-
-```bash
-curl -X POST \
-  http://litellm-pgvector.litellm.svc.cluster.local:8000/v1/vector_stores \
-  -H "Authorization: Bearer $LITELLM_VIRTUAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Support FAQ"}'
-```
+For direct in-cluster API access, the service address is `http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000`. For LiteLLM's `pg_vector` provider, configure that service as the backend and keep client traffic on LiteLLM's existing endpoint.
 
 ## Kubernetes deployment
 
-The `k8s/` directory contains a Kustomize deployment, service, and ConfigMap for the `litellm` namespace. Update `k8s/configmap.yaml` with your LiteLLM Service name, embedding alias, and S3 endpoint details. The default embedding dimension is 3072.
+The `k8s/` directory contains the app Deployment and internal Service, ConfigMap, and a three-instance CNPG PostgreSQL Cluster for the `litellm-pgvector` namespace. The database uses persistent 20Gi volumes per instance and the CloudNativePG standard PostgreSQL 17 image, which includes pgvector. The manifest creates the `litellm_pgvector` database and installs the `vector` extension. CNPG generates the application password in its `litellm-pgvector-db-app` Secret; the Deployment reads it as `PGPASSWORD`. Update `k8s/configmap.yaml` with your LiteLLM Service name, embedding alias, and S3 endpoint details. The default embedding dimension is 3072. Install the CNPG operator in the cluster before applying these manifests.
 
-Create a local file named `.k8s-secrets` with the database URL and credentials (do not commit it):
+Create a local file named `.k8s-secrets` with the app's other secrets (do not commit it):
 
 ```dotenv
-DATABASE_URL=postgresql://user:password@postgres.example.svc:5432/vectordb?schema=public
 LITELLM_API_KEY=your-litellm-admin-key
 S3_ACCESS_KEY=your-s3-access-key
 S3_SECRET_KEY=your-s3-secret-key
@@ -194,13 +185,13 @@ S3_SECRET_KEY=your-s3-secret-key
 Create the Kubernetes Secret, then apply the resources:
 
 ```bash
-kubectl create namespace litellm --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n litellm create secret generic litellm-pgvector-secrets \
+kubectl create namespace litellm-pgvector --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n litellm-pgvector create secret generic litellm-pgvector-secrets \
   --from-env-file=.k8s-secrets
 kubectl apply -k k8s/
 ```
 
-The CI workflow builds the container on pull requests and publishes `main` images from the default branch. Release Please creates versioned releases and publishes versioned images to `ghcr.io/fhswf/litellm-pgvector`. Pin `k8s/deployment.yaml` to a release tag for production. If the GHCR package is private, configure an image pull Secret in the `litellm` namespace and reference it from the Deployment.
+The database password is generated by CNPG, so no database password needs to be committed or sealed. The manually created Secret contains only the LiteLLM and S3 credentials. The CI workflow builds the container on pull requests and publishes `main` images from the default branch. Release Please creates versioned releases and publishes versioned images to `ghcr.io/fhswf/litellm-pgvector`. Pin `k8s/deployment.yaml` to a release tag for production. If the GHCR package is private, configure an image pull Secret in the `litellm-pgvector` namespace and reference it from the Deployment.
 
 The deployment starts with one replica and replaces the old pod before starting an updated pod because database schema setup runs during app startup. It uses an ephemeral model cache; use a PVC if you want to keep downloaded document models across pod replacements.
 
@@ -212,7 +203,7 @@ Create the app's Kubernetes Secret first, then install the Argo CD Application m
 kubectl apply -n argocd -f argocd/application.yaml
 ```
 
-The manifest tracks the `main` branch and deploys `k8s/` into the `litellm` namespace. Change the repository URL, revision, and destination namespace in `argocd/application.yaml` if your GitOps setup uses different values.
+The manifest tracks the `main` branch and deploys `k8s/` into the `litellm-pgvector` namespace. Create the namespace and app Secret first, then install the Argo CD Application. Change the repository URL, revision, and destination namespace in `argocd/application.yaml` if your GitOps setup uses different values.
 
 ## Setup and Installation
 
@@ -224,7 +215,7 @@ uv sync
 
 ### 2. Database Setup
 
-Create a PostgreSQL database with the `vector` extension available. On first startup, the app creates the configured schema, vector extension, and tables; the database user needs permission to do so. See [the database requirements](#integrate-with-an-existing-litellm-installation) before deploying.
+The Kubernetes deployment creates PostgreSQL with the `vector` extension using the CNPG Cluster resource. For a non-Kubernetes setup, create a PostgreSQL database with the extension available. The app creates its configured schema and tables on startup; see [the database requirements](#integrate-with-an-existing-litellm-installation).
 
 ### 3. Set up LiteLLM Proxy
 

@@ -39,6 +39,12 @@ spec:
                 name: litellm-pgvector-config
             - secretRef:
                 name: litellm-pgvector-secrets
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-pgvector-db-app
+                  key: password
           startupProbe:
             httpGet:
               path: /health

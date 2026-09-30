@@ -1,0 +1,27 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: litellm-pgvector-db
+  labels:
+    app.kubernetes.io/name: litellm-pgvector
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11-standard-bookworm@sha256:61207ab4e051645dcb9901e1ec9358b01e4adb45624cb4425be1eab27eac6508
+  enableSuperuserAccess: false
+  bootstrap:
+    initdb:
+      database: litellm_pgvector
+      owner: litellm_pgvector
+      # Leave initdb.secret unset so CNPG generates a secure
+      # litellm-pgvector-db-app Secret for the application role.
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector;
+  storage:
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi

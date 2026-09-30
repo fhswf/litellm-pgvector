@@ -11,7 +11,7 @@ spec:
     path: k8s
   destination:
     server: https://kubernetes.default.svc
-    namespace: litellm
+    namespace: litellm-pgvector
   syncPolicy:
     automated:
       prune: true
