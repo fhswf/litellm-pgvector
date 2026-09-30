@@ -12,6 +12,7 @@ dependencies = [
     "light-s3-client==0.0.40",
     "litellm==1.84.0",
     "pgvector==0.2.4",
+    "psycopg2-binary==2.9.11",
     "pydantic==2.13.4",
     "pydantic-settings==2.14.2",
     "python-dotenv==1.2.2",
