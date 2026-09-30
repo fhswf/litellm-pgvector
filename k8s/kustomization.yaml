@@ -6,6 +6,7 @@ resources:
   - deployment.yaml
   - postgres-cluster.yaml
   - service.yaml
+  - sealed-secret.yaml
 images:
   - name: ghcr.io/fhswf/litellm-pgvector
     newTag: latest # x-release-please-version
