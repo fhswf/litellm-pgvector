@@ -1,4 +1,7 @@
+FROM ghcr.io/astral-sh/uv:0.9.22 AS uv
 FROM python:3.11-slim
+
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -21,12 +24,18 @@ RUN apt-get update && apt-get install -y \
 # Set work directory
 WORKDIR /app
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN useradd --create-home --uid 10001 --user-group appuser
+
+# Install Python dependencies from the locked uv project
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy project
 COPY . .
+
+ENV HOME=/home/appuser
+USER 10001:10001
 
 # Expose port
 EXPOSE 8000

@@ -1,0 +1,7 @@
+.git
+.env
+.k8s-secrets
+.venv
+venv
+__pycache__
+**/__pycache__

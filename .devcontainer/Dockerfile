@@ -1,5 +1,7 @@
 FROM mcr.microsoft.com/devcontainers/python:3-3.12-trixie
 
+COPY --from=ghcr.io/astral-sh/uv:0.9.22 /uv /uvx /usr/local/bin/
+
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \

@@ -6,15 +6,17 @@
 - [ ] Add format filter for uploaded files
 - [ ] Optimize document chunking, tokenization. At the moment, dockling tokenizes documents on the CPU in the request thread with a small model downloaded from huggingface
 - [ ] Implement quota system for S3 storage, vector DB storage, amount of created vector stores
+- [ ] Verify file ownership/team when attaching a file to a vector store
 - [ ] Split project into more files to increase readability
 
 # SETUP
 - Copy `env.example` to `.env`, enter values
+- Install uv, then run `uv sync` to create the project environment
 - Create a docker contianer from the Dockerifle or run the Devcontainer in `.devcontainer/devcontainer.json`. 
   - When running the Devcontainer: You will need to adjust the `runArgs` parameter, depending on your setup. Currently, it is used to connect the created container to a docker network that contains the litellm service.
-  - When running the Devcontainer: Run `python main.py` within the devcontainer to start the application. 
+  - When running the Devcontainer: Run `uv run python main.py` within the devcontainer to start the application.
 - On startup, the Vector extension in Postgres will be enabled and the database tables will be created.
-- Look at the API routes at http://localhost:8000/docs when the container is running. Every route requires a HTTP Bearer token that is a valid LiteLLM virtual key
+- Look at the API routes at http://localhost:8000/docs when the container is running. API routes require a HTTP Bearer token that is a valid LiteLLM virtual key.
 -----
 
 # OpenAI Vector Stores API with PGVector
@@ -25,7 +27,7 @@ A FastAPI application that provides OpenAI-compatible vector store endpoints usi
 
 - 🔌 OpenAI-compatible API endpoints
 - 🗄️ PGVector for efficient vector storage and similarity search
-- 🎛️ Configurable database field mappings
+- 🎛️ Configurable PostgreSQL schema
 - 🔄 LiteLLM proxy integration for any embedding model
 - 🐳 Docker support
 - ⚡ FastAPI with async support
@@ -118,65 +120,111 @@ Create a `.env` file with the following configuration:
 # Database Configuration
 DATABASE_URL="postgresql://username:password@localhost:5432/vectordb?schema=public"
 
-# API Configuration
-SERVER_API_KEY="your-api-key-here"
-
 # Server Configuration
 HOST="0.0.0.0"
 PORT=8000
 
 # LiteLLM Proxy Configuration
-EMBEDDING__MODEL="text-embedding-ada-002"
+EMBEDDING__MODEL="litellm_proxy/my-embedding-model"
 EMBEDDING__BASE_URL="http://localhost:4000"
-EMBEDDING__API_KEY="sk-1234"
-EMBEDDING__DIMENSIONS=1536
+EMBEDDING__DIMENSIONS=3072
+LITELLM_API_KEY="your-litellm-admin-key"
 
-# Database Field Configuration (optional)
-DB_FIELDS__ID_FIELD="id"
-DB_FIELDS__CONTENT_FIELD="content"
-DB_FIELDS__METADATA_FIELD="metadata"
-DB_FIELDS__EMBEDDING_FIELD="embedding"
-DB_FIELDS__VECTOR_STORE_ID_FIELD="vector_store_id"
-DB_FIELDS__CREATED_AT_FIELD="created_at"
+# S3-compatible object storage
+S3_HOST=""
+S3_REGION=""
+S3_ACCESS_KEY=""
+S3_SECRET_KEY=""
+S3_BUCKET=""
 ```
 
 ### Database Field Mapping
 
-You can customize the database field names by setting environment variables:
-
-- `DB_FIELDS__ID_FIELD` - Primary key field (default: "id")
-- `DB_FIELDS__CONTENT_FIELD` - Text content field (default: "content")
-- `DB_FIELDS__METADATA_FIELD` - JSON metadata field (default: "metadata")
-- `DB_FIELDS__EMBEDDING_FIELD` - Vector embedding field (default: "embedding")
-- `DB_FIELDS__VECTOR_STORE_ID_FIELD` - Foreign key field (default: "vector_store_id")
-- `DB_FIELDS__CREATED_AT_FIELD` - Timestamp field (default: "created_at")
+Database table and column names are currently fixed by the application.
 
 ### LiteLLM Proxy Configuration
 
-The application uses LiteLLM proxy for embeddings. Configure it with:
+The application sends embedding requests to the LiteLLM proxy and uses its key-info endpoint to validate incoming virtual keys. Configure it with:
 
-- `EMBEDDING__MODEL` - Model name (e.g., "text-embedding-ada-002")
+- `EMBEDDING__MODEL` - LiteLLM model alias for an embedding deployment
 - `EMBEDDING__BASE_URL` - LiteLLM proxy URL (e.g., "http://localhost:4000")
-- `EMBEDDING__API_KEY` - LiteLLM proxy API key
-- `EMBEDDING__DIMENSIONS` - Embedding dimensions (default: 1536)
+- `EMBEDDING__DIMENSIONS` - Embedding dimensions (the current PGVector column is fixed at 3072)
+- `LITELLM_API_KEY` - LiteLLM admin key used to look up incoming virtual keys
+
+## Integrate with an existing LiteLLM installation
+
+This application runs as a separate API service alongside LiteLLM. Clients send vector-store and file API requests directly to this application; LiteLLM continues to handle model requests and embedding generation. The app uses LiteLLM to validate each incoming virtual key and forwards that key when it requests embeddings.
+
+Set the app's configuration to your existing LiteLLM proxy and embedding model alias:
+
+```dotenv
+EMBEDDING__BASE_URL=http://litellm.<namespace>.svc.cluster.local:4000
+EMBEDDING__MODEL=litellm_proxy/<embedding-model-alias>
+EMBEDDING__DIMENSIONS=3072
+LITELLM_API_KEY=<litellm-admin-key>
+```
+
+The `LITELLM_API_KEY` value must be allowed to call LiteLLM's `/key/info` endpoint. Keep it secret. Clients authenticate to this app with their own LiteLLM virtual keys. Configure the embedding alias in LiteLLM and ensure it returns 3072-dimensional vectors, matching the app's fixed PGVector column.
+
+The app also needs a PostgreSQL database with the `vector` extension and an S3-compatible object store for uploaded files. The database URL must include a schema query parameter, such as `?schema=public`; the database user needs permission to create the schema and extension on first startup, or an administrator must create them beforehand.
+
+In Kubernetes, the in-cluster API address is `http://litellm-pgvector.litellm.svc.cluster.local:8000`. Point vector-store clients at that service, while continuing to use the existing LiteLLM URL for chat and embedding API calls. For example:
+
+```bash
+curl -X POST \
+  http://litellm-pgvector.litellm.svc.cluster.local:8000/v1/vector_stores \
+  -H "Authorization: Bearer $LITELLM_VIRTUAL_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Support FAQ"}'
+```
+
+## Kubernetes deployment
+
+The `k8s/` directory contains a Kustomize deployment, service, and ConfigMap for the `litellm` namespace. Update `k8s/configmap.yaml` with your LiteLLM Service name, embedding alias, and S3 endpoint details. The default embedding dimension is 3072.
+
+Create a local file named `.k8s-secrets` with the database URL and credentials (do not commit it):
+
+```dotenv
+DATABASE_URL=postgresql://user:password@postgres.example.svc:5432/vectordb?schema=public
+LITELLM_API_KEY=your-litellm-admin-key
+S3_ACCESS_KEY=your-s3-access-key
+S3_SECRET_KEY=your-s3-secret-key
+```
+
+Create the Kubernetes Secret, then apply the resources:
+
+```bash
+kubectl create namespace litellm --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n litellm create secret generic litellm-pgvector-secrets \
+  --from-env-file=.k8s-secrets
+kubectl apply -k k8s/
+```
+
+The CI workflow builds the container on pull requests and publishes `main` images from the default branch. Release Please creates versioned releases and publishes versioned images to `ghcr.io/fhswf/litellm-pgvector`. Pin `k8s/deployment.yaml` to a release tag for production. If the GHCR package is private, configure an image pull Secret in the `litellm` namespace and reference it from the Deployment.
+
+The deployment starts with one replica and replaces the old pod before starting an updated pod because database schema setup runs during app startup. It uses an ephemeral model cache; use a PVC if you want to keep downloaded document models across pod replacements.
+
+### Argo CD
+
+Create the app's Kubernetes Secret first, then install the Argo CD Application manifest:
+
+```bash
+kubectl apply -n argocd -f argocd/application.yaml
+```
+
+The manifest tracks the `main` branch and deploys `k8s/` into the `litellm` namespace. Change the repository URL, revision, and destination namespace in `argocd/application.yaml` if your GitOps setup uses different values.
 
 ## Setup and Installation
 
 ### 1. Install Dependencies
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 2. Database Setup
 
-```bash
-# Generate Prisma client
-prisma generate
-
-# Run database migrations
-prisma db push
-```
+Create a PostgreSQL database with the `vector` extension available. On first startup, the app creates the configured schema, vector extension, and tables; the database user needs permission to do so. See [the database requirements](#integrate-with-an-existing-litellm-installation) before deploying.
 
 ### 3. Set up LiteLLM Proxy
 
@@ -190,13 +238,13 @@ litellm --model text-embedding-ada-002 --port 4000
 ### 4. Run the Application
 
 ```bash
-python main.py
+uv run python main.py
 ```
 
 Or using uvicorn directly:
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ## Docker Deployment

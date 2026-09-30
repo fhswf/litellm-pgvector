@@ -1,3 +1,4 @@
-#!/env/shell
+#!/usr/bin/env bash
+set -euo pipefail
 
-pip install --user --no-cache-dir -r requirements.txt
+uv sync --locked

@@ -3,4 +3,6 @@ __pycache__
 */__pycache__/*
 venv/*
 venv
+.venv/
+.k8s-secrets
 notes.md
