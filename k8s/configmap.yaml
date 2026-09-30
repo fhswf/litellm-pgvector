@@ -5,11 +5,15 @@ metadata:
 data:
   HOST: "0.0.0.0"
   PORT: "8000"
-  EMBEDDING__MODEL: "litellm_proxy/qwen3-embedding:8b"
+  EMBEDDING__MODEL: "openai/text-embedding-3-large"
   # LiteLLM is in the separate `litellm` namespace.
   EMBEDDING__BASE_URL: "http://litellm.litellm.svc.cluster.local:4000"
   # The PGVector column is currently fixed at 3072 dimensions in the application.
   EMBEDDING__DIMENSIONS: "3072"
+  # LiteLLM uses this address to call the app's OpenAI-compatible API.
+  VECTOR_STORE_API_BASE: "http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000"
+  # Create a private LiteLLM team for the app's registry key and set its ID here.
+  LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID: "REPLACE_WITH_PRIVATE_REGISTRY_TEAM_ID"
   # CNPG generates the matching application password in
   # `litellm-pgvector-db-app`; the Deployment supplies it through PGPASSWORD.
   DATABASE_URL: "postgresql://litellm_pgvector@litellm-pgvector-db-rw.litellm-pgvector.svc.cluster.local:5432/litellm_pgvector?schema=public"
