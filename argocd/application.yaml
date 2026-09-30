@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/fhswf/litellm-pgvector.git
+    repoURL: git@github.com:fhswf/litellm-pgvector.git
     targetRevision: main
     path: k8s
   destination:

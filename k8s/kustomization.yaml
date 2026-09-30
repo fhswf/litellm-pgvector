@@ -8,4 +8,4 @@ resources:
   - service.yaml
 images:
   - name: ghcr.io/fhswf/litellm-pgvector
-    newTag: v1.0.0 # x-release-please-version
+    newTag: sha256:9ab2119b5654669e0539a617bc07e59bdd0ef6c0aca1ac00262aae34df69693c # x-release-please-version
