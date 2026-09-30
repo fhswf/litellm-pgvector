@@ -31,7 +31,7 @@ jobs:
         env:
           RELEASE_PR: ${{ steps.release.outputs.pr }}
         run: |
-          branch="$(jq -r '.head.ref' <<< "$RELEASE_PR")"
+          branch="$(jq -r '.headBranchName' <<< "$RELEASE_PR")"
           git fetch origin "$branch"
           git checkout -B "$branch" FETCH_HEAD
           uv lock
