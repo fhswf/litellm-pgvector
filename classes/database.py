@@ -1,11 +1,15 @@
 from config import settings
 
-from sqlmodel import Field, SQLModel, create_engine, Session, text, MetaData, Relationship
+from sqlmodel import Field, SQLModel, create_engine, Session, text, MetaData, Relationship, select, col
 from sqlalchemy import Column, DATETIME, Engine
 from sqlalchemy.schema import CreateSchema
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
+from sqlalchemy.orm.attributes import flag_modified
 from pgvector.sqlalchemy import Vector
 from datetime import datetime
+from uuid import UUID
+from util import scope_to_litellm_user
+from fastapi import HTTPException
 
 from models import VectorStoreExpiresAfterObject
 
@@ -22,7 +26,7 @@ class VectorStore(SQLModel, table=True):
     team_id: str | None = Field(nullable=True)
     file_counts: dict | None = Field(sa_column=Column(JSONB))
     status: str = Field(default="completed")
-    usage_bytes: int | None = Field(default=0)
+    usage_bytes: int = Field(default=0)
     created_at: datetime = Field(sa_column=Column(TIMESTAMP), default_factory=lambda: datetime.now())
     expires_after: VectorStoreExpiresAfterObject | None = Field(sa_column=Column(JSONB, nullable=True), default=None)
     expires_at: datetime | None = Field(sa_column=Column(TIMESTAMP, nullable=True), default=None)
@@ -84,5 +88,50 @@ class Database:
 
     def session(self):
         return Session(self._engine, expire_on_commit=False)
+
+    def update_vector_store_statistics(
+            self,
+            vector_store_id: str,
+            litellm_vkey_info,
+            failed: int = 0,
+            cancelled: int = 0,
+            completed: int = 0,
+            in_progress: int = 0,
+            usage_bytes: int = 0
+    ):
+        session = self.session()
+        statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
+        statement = scope_to_litellm_user(statement, VectorStore, litellm_vkey_info)
+
+        vector_store = session.exec(statement).first()
+
+        if not vector_store:
+            raise HTTPException(status_code=404, detail="Vector Store not found")
+
+        if not vector_store.file_counts:
+            vector_store.file_counts = {
+                'failed': 0 if failed < 0 else failed,
+                'cancelled': 0 if cancelled < 0 else cancelled,
+                'completed': 0 if completed < 0 else completed,
+                'in_progress': 0 if in_progress < 0 else in_progress,
+            }
+        else:
+            vector_store.file_counts['failed'] += failed
+            vector_store.file_counts['cancelled'] += cancelled
+            vector_store.file_counts['completed'] += completed
+            vector_store.file_counts['in_progress'] += in_progress
+        print(completed)
+        vector_store.file_counts['total'] = (
+            vector_store.file_counts['failed']
+            + vector_store.file_counts['cancelled']
+            + vector_store.file_counts['completed']
+            + vector_store.file_counts['in_progress']
+        )
+        vector_store.usage_bytes += usage_bytes
+        # SQLalchemy does not recognize the change in the dict by itself so we have to flag the attribute
+        flag_modified(vector_store, 'file_counts')
+        session.add(vector_store)
+        session.commit()
+        session.close()
 
 database_instance = Database()

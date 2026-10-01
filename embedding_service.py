@@ -143,34 +143,6 @@ class EmbeddingService:
             session.add_all(new_embeddings)
             session.commit()
 
-            # Update vector store statistics
-            # TODO do this through the ORM classes
-            # TODO add counter to in_progress when adding the job to the job queue
-            update_statistics_statement = f"""
-                UPDATE {settings.database_schema}.vectorstore
-                SET
-                    file_counts = jsonb_set(
-                        jsonb_set(
-                            COALESCE(file_counts, '{{"in_progress": 0, "completed": 0, "failed": 0, "cancelled": 0, "total": 0}}'::jsonb),
-                            '{{completed}}',
-                            (COALESCE(file_counts->>'completed', '0')::int + 1)::text::jsonb
-                        ),
-                        '{{total}}',
-                        (COALESCE(file_counts->>'total', '0')::int + 1)::text::jsonb
-                    ),
-                    usage_bytes = COALESCE(usage_bytes, 0) + :total_content_length,
-                    last_active_at = NOW()
-                WHERE id = :vector_store_id
-                """
-            
-            res = session.connection().execute(
-                text(update_statistics_statement),
-                {
-                    'vector_store_id': vector_store_id,
-                    'total_content_length': total_content_length
-                }
-            )
-
             # Convert results to response format
             result_embeddings = []
             new_embedding: Embedding

@@ -8,7 +8,8 @@ from models import (
     DeleteFileResponse,
     VectorStoreFileRequest,
     VectorStoreFileResponse,
-    EmbeddingCreateRequest
+    EmbeddingCreateRequest,
+    VectorStoreFileDeleteResponse
 )
 
 from classes.s3_file_handler import S3FileHandler
@@ -131,41 +132,19 @@ async def delete_file(
         await s3_file_handler.delete_file(file.filename_on_disk)
 
         for vector_store_file in file.vector_store_files:
-            # Update vector store statistics
-            # TODO do this through the ORM classes
-            # TODO add counter to in_progress when adding the job to the job queue
-            update_statistics_statement = f"""
-                UPDATE {settings.database_schema}.vectorstore
-                SET
-                    file_counts = jsonb_set(
-                        jsonb_set(
-                            COALESCE(file_counts, '{{"in_progress": 0, "completed": 0, "failed": 0, "cancelled": 0, "total": 0}}'::jsonb),
-                            '{{completed}}',
-                            (COALESCE(file_counts->>'completed', '0')::int - 1)::text::jsonb
-                        ),
-                        '{{total}}',
-                        (COALESCE(file_counts->>'total', '0')::int - 1)::text::jsonb
-                    ),
-                    usage_bytes = COALESCE(usage_bytes, 0) - :usage_bytes,
-                    last_active_at = NOW()
-                WHERE id = :vector_store_id
-                """
-            
-            res = session.connection().execute(
-                text(update_statistics_statement),
-                {
-                    'vector_store_id': vector_store_file.vector_store_id,
-                    'usage_bytes': vector_store_file.usage_bytes
-                }
+            database_instance.update_vector_store_statistics(
+                vector_store_id=vector_store_file.vector_store_id.hex,
+                litellm_vkey_info=litellm_vkey_info,
+                completed=-1,
+                usage_bytes=-vector_store_file.usage_bytes
             )
 
         session.delete(file)
         session.commit()
-
-        session.close()
         return DeleteFileResponse(id=file_id)
 
     except HTTPException:
+        session.rollback()
         raise
     except Exception as e:
         import traceback
@@ -174,6 +153,8 @@ async def delete_file(
         raise HTTPException(
             status_code=500, detail=f"Failed to create embedding: {str(e)}"
         )
+    finally:
+        session.close()
 
 @router.post(
     "/v1/vector_stores/{vector_store_id}/files",
@@ -230,6 +211,7 @@ async def create_vector_store_file(
         embedding_vectors = await embedding_service.generate_embeddings(chunk_texts, litellm_vkey)
         embedding_create_requests = []
 
+        usage_bytes = 0
         for index, chunk_text in enumerate(chunk_texts):
             embedding_create_requests.append(
                 EmbeddingCreateRequest(
@@ -237,6 +219,7 @@ async def create_vector_store_file(
                     embedding=embedding_vectors[index],
                 )
             )
+            usage_bytes += len(chunk_text)
 
         new_vector_store_file = VectorStoreFile(
             file_id=UUID(request.file_id),
@@ -246,12 +229,19 @@ async def create_vector_store_file(
             attributes=None,
             chunking_strategy="static",
             created_at=datetime.datetime.now(),
-            usage_bytes=0,
+            usage_bytes=usage_bytes,
         )
 
         session.add(new_vector_store_file)
         session.commit()
         # session.refresh(new_vector_store_file)
+
+        database_instance.update_vector_store_statistics(
+            vector_store_id=vector_store_id,
+            litellm_vkey_info=litellm_vkey_info,
+            completed=1,
+            usage_bytes=usage_bytes
+        )
 
         embedding_result = await embedding_service.insert_embeddings(
             vector_store_id=vector_store_id, 
@@ -282,3 +272,46 @@ async def create_vector_store_file(
         raise HTTPException(
             status_code=500, detail=f"Failed to create embedding: {str(e)}"
         )
+
+@router.delete('/vector_stores/{vector_store_id}/files/{file_id}', response_model=VectorStoreFileDeleteResponse)
+async def delete_vector_store_file(
+    vector_store_id: str,
+    file_id: str,
+    litellm_vkey_info = Depends(get_litellm_vkey_info),
+):
+    try:
+        session = database_instance.session()
+        statement = select(VectorStoreFile).where(col(VectorStoreFile.vector_store_id) == UUID(vector_store_id)).where(col(VectorStoreFile.id) == UUID(file_id))
+        statement = scope_to_litellm_user(statement, File, litellm_vkey_info)
+
+        file = session.exec(statement).first()
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        session.delete(file)
+        session.commit()    
+
+        database_instance.update_vector_store_statistics(
+            vector_store_id=vector_store_id, 
+            litellm_vkey_info=litellm_vkey_info,
+            completed=-1,
+            usage_bytes=-file.usage_bytes
+            )
+
+        return VectorStoreFileDeleteResponse(
+            id=file_id,
+            deleted=True,
+        )
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete vector store file: {str(e)}"
+        )
+    finally:
+        session.close()
+        pass

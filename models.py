@@ -186,3 +186,8 @@ class VectorStoreUpdateResponse(BaseModel):
     usage_bytes: int
     last_active_at: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
+
+class VectorStoreFileDeleteResponse(BaseModel):
+    id: str
+    object: Literal["vector_store.file.deleted"] = "vector_store.file.deleted"
+    deleted: bool
