@@ -12,6 +12,7 @@ from sqlmodel import select, col, text
 from sqlalchemy import label
 
 from classes.database import VectorStore, VectorStoreFile, Embedding, database_instance
+from util import scope_to_litellm_user
 
 class EmbeddingService:
     """Service for generating embeddings using OpenAI SDK pointed at LiteLLM proxy"""
@@ -109,16 +110,8 @@ class EmbeddingService:
         try:
             # TODO deduplicate
             # Check if vector store exists
-            team = litellm_vkey_info['info']['team_id']
-            user = None if team else litellm_vkey_info['info']['user_id']
-
             statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
-            if team:
-                statement = statement.where(VectorStore.team_id == team)
-            elif user:
-                statement = statement.where(VectorStore.user_id == user)
-            else:
-                raise HTTPException(status_code=401, detail="No valid credentials provided")
+            statement = scope_to_litellm_user(statement, VectorStore, litellm_vkey_info)
 
             session = database_instance.session()
 

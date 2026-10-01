@@ -13,7 +13,12 @@ from models import (
 
 from classes.s3_file_handler import S3FileHandler
 from embedding_service import embedding_service
-from util import get_litellm_vkey_info
+from util import (
+    get_litellm_user_id,
+    get_litellm_vkey_info,
+    is_litellm_admin,
+    scope_to_litellm_user,
+)
 from config import settings
 from classes.database import database_instance, File, VectorStore, VectorStoreFile
 from sqlmodel import select, col, text
@@ -35,17 +40,16 @@ async def upload_file(
         if not file.size or not file.filename:
             raise HTTPException(status_code=500, detail="File upload failed")
 
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-        key_user_or_team_type = "user" if user else "team"
-        key_user_or_team_id = user if user else team
+        if is_litellm_admin(litellm_vkey_info):
+            raise HTTPException(
+                status_code=400,
+                detail="Upload a file with the LiteLLM user's API key, not the admin key",
+            )
+        user = get_litellm_user_id(litellm_vkey_info)
 
         session = database_instance.session()
         existing_file_statement = select(File).where(File.filename == file.filename)
-        if user:
-            existing_file_statement = existing_file_statement.where(File.user_id == user)
-        else:
-            existing_file_statement = existing_file_statement.where(File.team_id == team)
+        existing_file_statement = existing_file_statement.where(File.user_id == user)
 
         existing_file_result = session.exec(existing_file_statement).first()
 
@@ -61,11 +65,11 @@ async def upload_file(
             host=settings.s3_host
             )
 
-        upload_res = await s3_file_handler.upload_file(file, f"{key_user_or_team_type}/{key_user_or_team_id}")
+        upload_res = await s3_file_handler.upload_file(file, f"user/{user}")
 
         new_file = File(
             user_id=user,
-            team_id=team,
+            team_id=None,
             filename=file.filename,
             size=file.size,
             purpose=data.purpose,
@@ -107,16 +111,9 @@ async def delete_file(
     Delete a file, from storage aswell as from all vector stores.
     """
     try:
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-
         session = database_instance.session()
         statement = select(File).where(col(File.id) == UUID(file_id))
-
-        if user:
-            statement = statement.where(File.user_id == user)
-        else:
-            statement = statement.where(File.team_id == team)
+        statement = scope_to_litellm_user(statement, File, litellm_vkey_info)
 
         file = session.exec(statement).first()
         if not file:
@@ -190,16 +187,8 @@ async def create_vector_store_file(
     try:
         # Check if vector store exists
         # TODO deduplicate
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-
         statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
-        if team:
-            statement = statement.where(VectorStore.team_id == team)
-        elif user:
-            statement = statement.where(VectorStore.user_id == user)
-        else:
-            raise HTTPException(status_code=401, detail="No valid credentials provided")
+        statement = scope_to_litellm_user(statement, VectorStore, litellm_vkey_info)
 
         session = database_instance.session()
         vector_store = session.exec(statement).first()
@@ -207,6 +196,7 @@ async def create_vector_store_file(
             raise HTTPException(status_code=404, detail="Vector store not found")
 
         file_statement = select(File).where(col(File.id) == UUID(request.file_id))
+        file_statement = file_statement.where(File.user_id == vector_store.user_id)
         requested_file = session.exec(file_statement).first()
         if not requested_file:
             raise HTTPException(status_code=404, detail="File not found")
@@ -250,8 +240,8 @@ async def create_vector_store_file(
 
         new_vector_store_file = VectorStoreFile(
             file_id=UUID(request.file_id),
-            user_id=user,
-            team_id=team,
+            user_id=vector_store.user_id,
+            team_id=None,
             vector_store_id=UUID(vector_store_id),
             attributes=None,
             chunking_strategy="static",

@@ -19,13 +19,24 @@ from models import (
     VectorStoreUpdateResponse
 )
 
-from util import get_litellm_vkey_info
+from util import get_litellm_user_id, get_litellm_vkey_info, is_litellm_admin
+from litellm_registry import (
+    LiteLLMRegistryError,
+    delete_registered_vector_store,
+    register_vector_store,
+)
 
 from embedding_service import embedding_service
 
 from classes.database import VectorStore, database_instance, Embedding
 
 router = APIRouter()
+
+
+def _scope_to_owner(statement, model, litellm_vkey_info):
+    if is_litellm_admin(litellm_vkey_info):
+        return statement
+    return statement.where(model.user_id == get_litellm_user_id(litellm_vkey_info))
 
 @router.post("/v1/vector_stores", response_model=VectorStoreResponse)
 async def create_vector_store(
@@ -35,27 +46,46 @@ async def create_vector_store(
     """
     Create a new vector store.
     """
-    try:
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-
-        store = VectorStore(
-            name=request.name,
-            user_id=user,
-            team_id=team,
-            file_counts={"in_progress": 0, "completed": 0, "failed": 0, "cancelled": 0, "total": 0},
-            status="completed",
-            usage_bytes=0,
-            expires_after=request.expires_after,
-            store_metadata=request.metadata or {}
+    if is_litellm_admin(litellm_vkey_info):
+        raise HTTPException(
+            status_code=400,
+            detail="Create a vector store with the LiteLLM user's API key, not the admin key",
         )
 
-        session = database_instance.session()
+    user = get_litellm_user_id(litellm_vkey_info)
+    session = database_instance.session()
+    store = VectorStore(
+        name=request.name,
+        user_id=user,
+        team_id=None,
+        file_counts={"in_progress": 0, "completed": 0, "failed": 0, "cancelled": 0, "total": 0},
+        status="completed",
+        usage_bytes=0,
+        expires_after=request.expires_after,
+        store_metadata=request.metadata or {},
+    )
 
+    try:
         session.add(store)
         session.commit()
+        session.refresh(store)
 
-        # Convert to response format
+        try:
+            await register_vector_store(
+                vector_store_id=store.id.hex,
+                name=store.name,
+                owner_key=litellm_vkey_info["key"],
+                owner_info=litellm_vkey_info["info"],
+                metadata=store.store_metadata,
+            )
+        except LiteLLMRegistryError as exc:
+            session.delete(store)
+            session.commit()
+            raise HTTPException(
+                status_code=502,
+                detail=f"Vector store was not registered in LiteLLM: {exc}",
+            ) from exc
+
         created_at = int(store.created_at.timestamp())
         expires_at = (
             int(store.expires_at.timestamp())
@@ -67,8 +97,6 @@ async def create_vector_store(
             if store.last_active_at
             else None
         )
-
-        session.close()
 
         return VectorStoreResponse(
             id=store.id.hex,
@@ -90,11 +118,15 @@ async def create_vector_store(
             metadata=store.store_metadata
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        print(e)
+        session.rollback()
         raise HTTPException(
             status_code=500, detail=f"Failed to create vector store: {str(e)}"
         )
+    finally:
+        session.close()
 
 @router.get("/v1/vector_stores", response_model=VectorStoreListResponse)
 async def list_vector_stores(
@@ -109,9 +141,6 @@ async def list_vector_stores(
     try:
         limit = min(limit or 20, 100)  # Cap at 100 results
 
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-
         statement = select(VectorStore)
 
         if after:
@@ -120,10 +149,7 @@ async def list_vector_stores(
         if before:
             statement = statement.where(col(VectorStore.id) < UUID(before))
 
-        if team:
-            statement = statement.where(VectorStore.team_id == team)
-        elif user:
-            statement = statement.where(VectorStore.user_id == user)
+        statement = _scope_to_owner(statement, VectorStore, litellm_vkey_info)
 
         statement = statement.order_by(desc(VectorStore.created_at)).limit(limit + 1)
 
@@ -196,16 +222,8 @@ async def search_vector_store(
     Search a vector store for similar content.
     """
     try:
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-
         statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
-        if team:
-            statement = statement.where(VectorStore.team_id == team)
-        elif user:
-            statement = statement.where(VectorStore.user_id == user)
-        else:
-            raise HTTPException(status_code=401, detail="No valid credentials provided")
+        statement = _scope_to_owner(statement, VectorStore, litellm_vkey_info)
 
         session = database_instance.session()
         res = session.exec(statement)
@@ -225,7 +243,7 @@ async def search_vector_store(
             Embedding.content, 
             Embedding.embedding_metadata, 
             Embedding.embedding.l2_distance(query_embedding).label('distance') # pyright: ignore[reportAttributeAccessIssue]
-            ).where(col(VectorStore.id) == UUID(vector_store_id))
+            ).where(col(Embedding.vector_store_id) == store.id)
 
         if request.filters:
             for key, value in request.filters.items():
@@ -278,16 +296,8 @@ async def search_vector_store(
 @router.delete("/vector_stores/{vector_store_id}/", response_model=VectorStoreDeleteResponse)
 async def delete_vector_store(vector_store_id: str, litellm_vkey_info = Depends(get_litellm_vkey_info)):
     try:
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-
         statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
-        if team:
-            statement = statement.where(VectorStore.team_id == team)
-        elif user:
-            statement = statement.where(VectorStore.user_id == user)
-        else:
-            raise HTTPException(status_code=401, detail="No valid credentials provided")
+        statement = _scope_to_owner(statement, VectorStore, litellm_vkey_info)
 
         session = database_instance.session()
         res = session.exec(statement)
@@ -295,6 +305,14 @@ async def delete_vector_store(vector_store_id: str, litellm_vkey_info = Depends(
 
         if not store:
             raise HTTPException(status_code=404, detail="Vector store not found")
+
+        try:
+            await delete_registered_vector_store(store.id.hex)
+        except LiteLLMRegistryError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not remove the vector store from LiteLLM: {exc}",
+            ) from exc
 
         session.delete(store)
         session.commit()
@@ -314,16 +332,8 @@ async def delete_vector_store(vector_store_id: str, litellm_vkey_info = Depends(
 @router.get("/vector_stores/{vector_store_id}/", response_model=VectorStoreRetrieveResponse)
 async def retrieve_vector_store(vector_store_id: str, litellm_vkey_info = Depends(get_litellm_vkey_info)):
     try:
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-
         statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
-        if team:
-            statement = statement.where(VectorStore.team_id == team)
-        elif user:
-            statement = statement.where(VectorStore.user_id == user)
-        else:
-            raise HTTPException(status_code=401, detail="No valid credentials provided")
+        statement = _scope_to_owner(statement, VectorStore, litellm_vkey_info)
 
         session = database_instance.session()
         res = session.exec(statement)
@@ -348,19 +358,11 @@ async def retrieve_vector_store(vector_store_id: str, litellm_vkey_info = Depend
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
-@router.post("/vector_stores/{vector_store_id}/", response_model=VectorStoreUpdateRequest)
+@router.post("/vector_stores/{vector_store_id}/", response_model=VectorStoreUpdateResponse)
 async def update_vector_store(vector_store_id: str, request: VectorStoreUpdateRequest, litellm_vkey_info = Depends(get_litellm_vkey_info)):
     try:
-        team = litellm_vkey_info['info']['team_id']
-        user = None if team else litellm_vkey_info['info']['user_id']
-
         statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
-        if team:
-            statement = statement.where(VectorStore.team_id == team)
-        elif user:
-            statement = statement.where(VectorStore.user_id == user)
-        else:
-            raise HTTPException(status_code=401, detail="No valid credentials provided")
+        statement = _scope_to_owner(statement, VectorStore, litellm_vkey_info)
 
         session = database_instance.session()
         res = session.exec(statement)
@@ -381,7 +383,7 @@ async def update_vector_store(vector_store_id: str, request: VectorStoreUpdateRe
         session.commit()
         session.close()
 
-        return VectorStoreRetrieveResponse(
+        return VectorStoreUpdateResponse(
             id=store.id.hex,
             name=store.name,
             created_at=int(store.created_at.timestamp()),

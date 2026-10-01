@@ -128,7 +128,10 @@ PORT=8000
 EMBEDDING__MODEL="litellm_proxy/my-embedding-model"
 EMBEDDING__BASE_URL="http://localhost:4000"
 EMBEDDING__DIMENSIONS=3072
+VECTOR_STORE_API_BASE="http://localhost:8000"
 LITELLM_API_KEY="your-litellm-admin-key"
+LITELLM_VECTOR_STORE_REGISTRY_API_KEY="private-team-management-key"
+LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID="private-registry-team-id"
 
 # S3-compatible object storage
 S3_HOST=""
@@ -150,21 +153,48 @@ The application sends embedding requests to the LiteLLM proxy and uses its key-i
 - `EMBEDDING__BASE_URL` - LiteLLM proxy URL (e.g., "http://localhost:4000")
 - `EMBEDDING__DIMENSIONS` - Embedding dimensions (the current PGVector column is fixed at 3072)
 - `LITELLM_API_KEY` - LiteLLM admin key used to look up incoming virtual keys
+- `VECTOR_STORE_API_BASE` - URL LiteLLM uses to call this app (use the Kubernetes Service URL in-cluster)
+- `LITELLM_VECTOR_STORE_REGISTRY_API_KEY` - A non-admin LiteLLM management key assigned to a private, app-only team
+- `LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID` - The private team's ID; the app checks that the registry key belongs to it
 
 ## Integrate with an existing LiteLLM installation
 
 This application runs as a separate internal API service alongside LiteLLM. When using LiteLLM's `pg_vector` vector-store provider, clients send vector-store requests to LiteLLM and LiteLLM calls this service. The app calls LiteLLM for key validation and embedding generation. No ingress is needed for `litellm-pgvector` when LiteLLM can reach its Kubernetes Service; keep the app service as `ClusterIP`. If clients call this app directly from outside the cluster, expose it separately.
 
-Set the app's configuration to your existing LiteLLM proxy and embedding model alias:
+Set the app's configuration to your existing LiteLLM proxy and embedding model alias. In Kubernetes, LiteLLM's `api_base` for the connector should be the internal service URL, so the LiteLLM server can reach it without exposing the service publicly.
 
 ```dotenv
 EMBEDDING__BASE_URL=http://litellm.litellm.svc.cluster.local:4000
 EMBEDDING__MODEL=litellm_proxy/<embedding-model-alias>
 EMBEDDING__DIMENSIONS=3072
 LITELLM_API_KEY=<litellm-admin-key>
+LITELLM_VECTOR_STORE_REGISTRY_API_KEY=<private-team-management-key>
+LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID=<private-registry-team-id>
+VECTOR_STORE_API_BASE=http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000
 ```
 
-The `LITELLM_API_KEY` value must be allowed to call LiteLLM's `/key/info` endpoint. Keep it secret. Configure LiteLLM's `pg_vector` provider to use the internal service URL `http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000` as its API base, along with a valid LiteLLM virtual key for the backend API key. The provider calls this service over cluster networking; clients continue to use LiteLLM's existing endpoint. The app scopes stores to the identity of the key LiteLLM sends to it, so use a team key when stores should be shared by that team. Configure the embedding alias in LiteLLM and ensure it returns 3072-dimensional vectors, matching the app's fixed PGVector column.
+The `LITELLM_API_KEY` value must be allowed to call `/key/info` and `/key/update`; keep it secret. Create a private LiteLLM team for the app's registry key, put no end-user keys in that team, and grant the registry key access to `/vector_store/new` and `/vector_store/delete`. LiteLLM assigns registered stores to the registry key's team. The app then adds the new store ID to the creating key's `object_permission.vector_stores` allowlist. This lets the creating key and LiteLLM proxy admins access the store while other users and teams are denied. The grant is attached to the exact API key used to create the store; use that key for subsequent LiteLLM requests. The app verifies the registry key's team ID before registering a store. Do not put user keys in the private registry team: LiteLLM grants team members access to every store registered by that team.
+
+Users create stores by calling this app's `POST /v1/vector_stores` endpoint with their own LiteLLM virtual key. The app creates a user-owned database row and registers it in LiteLLM with the `pg_vector` provider and this app's API base URL. The resulting store appears in LiteLLM's Vector Stores UI; users do not need to manually choose or copy a UUID there. Use a key with a LiteLLM `user_id`; team membership does not make the app's database store team-shared. Configure the embedding alias in LiteLLM and ensure it returns 3072-dimensional vectors, matching the app's fixed PGVector column.
+
+This registration flow secures newly created stores. Existing LiteLLM vector-store registrations keep their current LiteLLM access settings; review and remove or re-register any legacy team-shared stores if they also need to become private.
+
+For a local test against the Kubernetes `ClusterIP` service, forward its port and create a store with the user's LiteLLM key:
+
+```bash
+kubectl port-forward -n litellm-pgvector svc/litellm-pgvector 8000:8000
+```
+
+In another terminal:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/vector_stores \
+  -H "Authorization: Bearer $LITELLM_USER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Support FAQ"}'
+```
+
+The response contains the generated vector store ID. The app registers that ID automatically, and it then appears in LiteLLM's Vector Stores UI. For end-user access outside the cluster, expose this app through an authenticated HTTPS ingress or gateway. LiteLLM itself should keep using the in-cluster `VECTOR_STORE_API_BASE` URL.
 
 The app also needs PostgreSQL with the `vector` extension and an S3-compatible object store for uploaded files. The Kubernetes CNPG Cluster manifest creates the database and extension. For other installations, the database URL must include a schema query parameter, such as `?schema=public`, and the database user needs permission to create the schema and extension on first startup, or an administrator must create them beforehand.
 
@@ -174,10 +204,11 @@ For direct in-cluster API access, the service address is `http://litellm-pgvecto
 
 The `k8s/` directory contains the app Deployment and internal Service, ConfigMap, and a three-instance CNPG PostgreSQL Cluster for the `litellm-pgvector` namespace. The database uses persistent 20Gi volumes per instance and the CloudNativePG standard PostgreSQL 17 image, which includes pgvector. The manifest creates the `litellm_pgvector` database and installs the `vector` extension. CNPG generates the application password in its `litellm-pgvector-db-app` Secret; the Deployment reads it as `PGPASSWORD`. Update `k8s/configmap.yaml` with your LiteLLM Service name, embedding alias, and S3 endpoint details. The default embedding dimension is 3072. Install the CNPG operator in the cluster before applying these manifests.
 
-Edit the ignored local `.k8s-secrets` file with the app's real credentials. The local file currently contains placeholders; the script refuses to seal them until you replace them.
+Edit the ignored local `.k8s-secrets` file with the app's real credentials. The local file currently contains placeholders; the script refuses to seal them until you replace them. `LITELLM_VECTOR_STORE_REGISTRY_API_KEY` must be a management key from the private registry team described above. After adding it and setting `LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID` in the ConfigMap, run the sealing script again and deploy the regenerated `k8s/sealed-secret.yaml`.
 
 ```dotenv
 LITELLM_API_KEY=your-real-litellm-admin-key
+LITELLM_VECTOR_STORE_REGISTRY_API_KEY=your-private-team-management-key
 S3_ACCESS_KEY=your-real-s3-access-key
 S3_SECRET_KEY=your-real-s3-secret-key
 ```

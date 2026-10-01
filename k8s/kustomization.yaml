@@ -4,6 +4,7 @@ namespace: litellm-pgvector
 resources:
   - configmap.yaml
   - deployment.yaml
+  - ingress.yaml
   - postgres-cluster.yaml
   - service.yaml
   - sealed-secret.yaml

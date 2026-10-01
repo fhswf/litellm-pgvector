@@ -55,6 +55,9 @@ class Settings(BaseSettings):
 
     # LiteLLM config
     litellm_api_key: str = ""
+    litellm_vector_store_registry_api_key: str = ""
+    litellm_vector_store_registry_team_id: str = ""
+    vector_store_api_base: str = "http://localhost:8000"
 
     class Config:
         env_file = ".env"

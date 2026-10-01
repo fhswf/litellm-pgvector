@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: litellm-pgvector-ingress
+  annotations:
+    gatus.home-operations.com/enabled: "true"
+    gatus.home-operations.com/endpoint: |
+      url: https://pgvector.fh-swf.cloud/health
+      group: litellm-pgvector
+      extra-labels:
+        app_type: ingress
+      interval: 1m
+      conditions:
+        - "[STATUS] == 200"
+        - "[CERTIFICATE_EXPIRATION] > 72h"
+        - "[RESPONSE_TIME] < 2000"
+    traefik.frontend.passHostHeader: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls.certresolver: myresolver
+spec:
+  rules:
+    # Replace the example hostname here and in the Gatus endpoint URL above.
+    - host: pgvector.fh-swf.cloud
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: litellm-pgvector
+                port:
+                  number: 8000

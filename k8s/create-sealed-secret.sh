@@ -20,14 +20,14 @@ if [[ ! -f "$secret_file" ]]; then
   exit 1
 fi
 
-for required_key in LITELLM_API_KEY S3_ACCESS_KEY S3_SECRET_KEY; do
+for required_key in LITELLM_API_KEY LITELLM_VECTOR_STORE_REGISTRY_API_KEY S3_ACCESS_KEY S3_SECRET_KEY; do
   if ! grep -q "^${required_key}=" "$secret_file"; then
     echo "Missing $required_key in $secret_file" >&2
     exit 1
   fi
 done
 
-if grep -Eq '^(LITELLM_API_KEY|S3_ACCESS_KEY|S3_SECRET_KEY)=REPLACE_ME' "$secret_file"; then
+if grep -Eq '^(LITELLM_API_KEY|LITELLM_VECTOR_STORE_REGISTRY_API_KEY|S3_ACCESS_KEY|S3_SECRET_KEY)=REPLACE_ME' "$secret_file"; then
   echo "Replace the placeholder values in $secret_file before sealing." >&2
   exit 1
 fi
