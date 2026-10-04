@@ -45,7 +45,19 @@ jobs:
       - name: Run file lifecycle integration tests
         env:
           TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/testdb
-        run: uv run --locked --no-sync python -m unittest discover -s tests -v
+        run: |
+          set -o pipefail
+          uv run --locked --no-sync python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/integration-tests.log"
+
+      - name: Report integration test output
+        if: ${{ always() }}
+        run: |
+          echo '## Integration tests' >> "$GITHUB_STEP_SUMMARY"
+          if test -s "$RUNNER_TEMP/integration-tests.log"; then
+            sed 's/^/    /' "$RUNNER_TEMP/integration-tests.log" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'The integration tests did not produce output.' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   build:
     needs: integration-tests
@@ -96,3 +108,64 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  report:
+    if: ${{ always() }}
+    needs: [integration-tests, build]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Report CI results
+        env:
+          TEST_RESULT: ${{ needs['integration-tests'].result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          {
+            echo '## CI results'
+            echo
+            echo '| Job | Result |'
+            echo '| --- | --- |'
+            echo "| Integration tests | $TEST_RESULT |"
+            echo "| Image build | $BUILD_RESULT |"
+            echo
+            echo "[View the full run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update PR with CI results
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' }}
+        uses: actions/github-script@v9
+        env:
+          TEST_RESULT: ${{ needs['integration-tests'].result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const number = context.payload.pull_request.number;
+            const marker = '<!-- litellm-pgvector-ci-results -->';
+            const format = result => ({
+              success: '✅ Passed', failure: '❌ Failed',
+              skipped: '⏭️ Skipped', cancelled: '⚪ Cancelled',
+              timed_out: '⏱️ Timed out', action_required: '⚠️ Action required'
+            })[result] || result || 'Unavailable';
+            const body = [
+              marker,
+              '## CI results',
+              '| Job | Result |',
+              '| --- | --- |',
+              `| Integration tests | ${format(process.env.TEST_RESULT)} |`,
+              `| Image build | ${format(process.env.BUILD_RESULT)} |`,
+              '',
+              `[Actions run](${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${context.runId})`
+            ].join('\n');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: number, per_page: 100
+            });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({owner, repo, comment_id: existing.id, body});
+            } else {
+              await github.rest.issues.createComment({owner, repo, issue_number: number, body});
+            }
