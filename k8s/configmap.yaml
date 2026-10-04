@@ -17,6 +17,6 @@ data:
   # CNPG generates the matching application password in
   # `litellm-pgvector-db-app`; the Deployment supplies it through PGPASSWORD.
   DATABASE_URL: "postgresql://litellm_pgvector@litellm-pgvector-db-rw.litellm-pgvector.svc.cluster.local:5432/litellm_pgvector?schema=public"
-  S3_HOST: ""
+  S3_HOST: "https://s3.ki.fh-swf.de/"
   S3_REGION: ""
-  S3_BUCKET: ""
+  S3_BUCKET: "litellm-pgvector"
