@@ -175,18 +175,25 @@ async def register_vector_store(
     owner_info: dict[str, Any],
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Register a private PGVector store and allow only its owner's key."""
+    """Register a private vector store and allow only its owner's key."""
     if not settings.vector_store_api_base:
         raise LiteLLMRegistryError("VECTOR_STORE_API_BASE is not configured")
     await _get_private_registry_team_id(owner_info)
 
+    provider = settings.vector_store_provider
+    api_base = settings.vector_store_api_base.rstrip("/")
+    if api_base.endswith("/v1"):
+        api_base = api_base[:-3]
+    if provider == "openai":
+        api_base = f"{api_base}/v1"
+
     request_body = {
         "vector_store_id": vector_store_id,
-        "custom_llm_provider": "pg_vector",
+        "custom_llm_provider": provider,
         "vector_store_name": name,
         "vector_store_metadata": metadata or {},
         "litellm_params": {
-            "api_base": settings.vector_store_api_base.rstrip("/"),
+            "api_base": api_base,
             "api_key": owner_key,
         },
     }

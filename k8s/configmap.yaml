@@ -12,6 +12,8 @@ data:
   EMBEDDING__DIMENSIONS: "3072"
   # LiteLLM uses this address to call the app's OpenAI-compatible API.
   VECTOR_STORE_API_BASE: "http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000"
+  # LiteLLM's openai provider supports vector-store file listing.
+  VECTOR_STORE_PROVIDER: "openai"
   # Create a private LiteLLM team for the app's registry key and set its ID here.
   LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID: "45a2745d-9d50-4953-99ff-3c5fb9839588"
   # CNPG generates the matching application password in

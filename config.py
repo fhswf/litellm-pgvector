@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 from urllib.parse import urlparse, parse_qs
@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     litellm_vector_store_registry_api_key: str = ""
     litellm_vector_store_registry_team_id: str = ""
     vector_store_api_base: str = "http://localhost:8000"
+    vector_store_provider: Literal["pg_vector", "openai"] = "pg_vector"
 
     class Config:
         env_file = ".env"

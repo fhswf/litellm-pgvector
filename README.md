@@ -169,6 +169,7 @@ EMBEDDING__MODEL="litellm_proxy/my-embedding-model"
 EMBEDDING__BASE_URL="http://localhost:4000"
 EMBEDDING__DIMENSIONS=3072
 VECTOR_STORE_API_BASE="http://localhost:8000"
+VECTOR_STORE_PROVIDER="openai"
 LITELLM_API_KEY="your-litellm-admin-key"
 LITELLM_VECTOR_STORE_REGISTRY_API_KEY="private-team-management-key"
 LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID="private-registry-team-id"
@@ -194,12 +195,13 @@ The application sends embedding requests to the LiteLLM proxy and uses its key-i
 - `EMBEDDING__DIMENSIONS` - Embedding dimensions (the current PGVector column is fixed at 3072)
 - `LITELLM_API_KEY` - LiteLLM admin credential used to validate virtual keys and update their vector-store permissions
 - `VECTOR_STORE_API_BASE` - URL LiteLLM uses to call this app (use the Kubernetes Service URL in-cluster)
+- `VECTOR_STORE_PROVIDER` - LiteLLM provider used for new store registrations: `openai` or `pg_vector` (default). Use `openai` for vector-store file listing through LiteLLM. The app adds `/v1` to its registered API base for this provider.
 - `LITELLM_VECTOR_STORE_REGISTRY_API_KEY` - Separate, non-admin LiteLLM key assigned to a private, app-only team; used to register and delete stores
 - `LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID` - The ID of that private team, used to verify the registry key's team membership
 
 ## Integrate with an existing LiteLLM installation
 
-This application runs as a separate internal API service alongside LiteLLM. When using LiteLLM's `pg_vector` vector-store provider, clients send vector-store requests to LiteLLM and LiteLLM calls this service. The app calls LiteLLM for key validation and embedding generation. No ingress is needed for `litellm-pgvector` when LiteLLM can reach its Kubernetes Service; keep the app service as `ClusterIP`. If clients call this app directly from outside the cluster, expose it separately.
+This application runs as a separate internal API service alongside LiteLLM. Clients send vector-store requests to LiteLLM, which calls this service using the configured provider. The app calls LiteLLM for key validation and embedding generation. No ingress is needed for `litellm-pgvector` when LiteLLM can reach its Kubernetes Service; keep the app service as `ClusterIP`. If clients call this app directly from outside the cluster, expose it separately.
 
 Set the app's configuration to your existing LiteLLM proxy and embedding model alias. In Kubernetes, LiteLLM's `api_base` for the connector should be the internal service URL, so the LiteLLM server can reach it without exposing the service publicly.
 
@@ -211,6 +213,7 @@ LITELLM_API_KEY=<litellm-admin-key>
 LITELLM_VECTOR_STORE_REGISTRY_API_KEY=<private-team-management-key>
 LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID=<private-registry-team-id>
 VECTOR_STORE_API_BASE=http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000
+VECTOR_STORE_PROVIDER=openai
 ```
 
 These three values have different roles:
@@ -223,11 +226,13 @@ These three values have different roles:
 
 Use two distinct keys: the admin key needs permission to inspect and update user keys, while the registry key needs only the vector-store management routes and determines which LiteLLM team owns the registrations. Create a private LiteLLM team for the registry key, grant that key access to `/vector_store/new` and `/vector_store/delete`, and put no end-user keys in the team. LiteLLM grants team members access to stores registered under their team. Keep both API keys secret; in the Kubernetes deployment, the keys belong in the Secret and the team ID belongs in the ConfigMap.
 
-Users create stores by calling this app's `POST /v1/vector_stores` endpoint with their **own** LiteLLM virtual key, which must have a LiteLLM `user_id`. The app validates that key with the admin credential, creates a user-owned database row, and registers the store in LiteLLM with the registry key, the `pg_vector` provider, and this app's API base URL. It then uses the admin credential to add the store ID to the creating key's `object_permission.vector_stores` allowlist. The grant applies to that exact user key, so use the same key for subsequent LiteLLM requests. LiteLLM proxy admins can also access the store; end users outside the private registry team need their own key to be granted access.
+Users create stores by calling this app's `POST /v1/vector_stores` endpoint with their **own** LiteLLM virtual key, which must have a LiteLLM `user_id`. The app validates that key with the admin credential, creates a user-owned database row, and registers the store in LiteLLM with the registry key, the configured provider, and this app's API base URL. It then uses the admin credential to add the store ID to the creating key's `object_permission.vector_stores` allowlist. The grant applies to that exact user key, so use the same key for subsequent LiteLLM requests. LiteLLM proxy admins can also access the store; end users outside the private registry team need their own key to be granted access.
 
 The store appears in LiteLLM's Vector Stores UI; users do not need to manually choose or copy a UUID there. Team membership does not make the app's database store team-shared. Configure the embedding alias in LiteLLM and ensure it returns 3072-dimensional vectors, matching the app's fixed PGVector column.
 
 This registration flow secures newly created stores. Existing LiteLLM vector-store registrations keep their current LiteLLM access settings; review and remove or re-register any legacy team-shared stores if they also need to become private.
+
+Changing `VECTOR_STORE_PROVIDER` affects new registrations only. Existing LiteLLM registrations must be re-registered to use the new provider and API base.
 
 For a local test against the Kubernetes `ClusterIP` service, forward its port and create a store with the user's LiteLLM key:
 
@@ -248,7 +253,7 @@ The response contains the generated vector store ID. The app registers that ID a
 
 The app also needs PostgreSQL with the `vector` extension and an S3-compatible object store for uploaded files. The Kubernetes CNPG Cluster manifest creates the database and extension. For other installations, the database URL must include a schema query parameter, such as `?schema=public`, and the database user needs permission to create the schema and extension on first startup, or an administrator must create them beforehand.
 
-For direct in-cluster API access, the service address is `http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000`. For LiteLLM's `pg_vector` provider, configure that service as the backend and keep client traffic on LiteLLM's existing endpoint.
+For direct in-cluster API access, the service address is `http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000`. Set that service address as `VECTOR_STORE_API_BASE` and keep client traffic on LiteLLM's existing endpoint.
 
 ## Kubernetes deployment
 
