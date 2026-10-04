@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0](https://github.com/fhswf/litellm-pgvector/compare/v1.1.0...v1.2.0) (2026-10-04)
+
+
+### Features
+
+* add CI PR report workflow and enhance integration test output reporting ([baf5634](https://github.com/fhswf/litellm-pgvector/commit/baf5634d557f7ed36275a25d82fb605323d6cb7c))
+* add integration tests for file lifecycle with PostgreSQL and mock S3 ([fb70b55](https://github.com/fhswf/litellm-pgvector/commit/fb70b55ae6b3fdd1cd0ff17e2b1b0d0efdd0360a))
+* enhance file ingestion and management with async processing and improved error handling ([5303076](https://github.com/fhswf/litellm-pgvector/commit/5303076afe01f4b5682d6f3c52d52e884201d797))
+
+
+### Bug Fixes
+
+* update S3 configuration to use dynamic region and bucket settings ([35b1e8e](https://github.com/fhswf/litellm-pgvector/commit/35b1e8ef06fae6ccae2064dff80900e5ddee3892))
+
 ## [1.1.0](https://github.com/fhswf/litellm-pgvector/compare/v1.0.0...v1.1.0) (2026-10-01)
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "litellm-pgvector"
-version = "1.1.0"
+version = "1.2.0"
 description = "OpenAI-compatible vector store API using PGVector and LiteLLM"
 readme = "README.md"
 requires-python = ">=3.11"
