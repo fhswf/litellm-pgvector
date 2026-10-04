@@ -152,10 +152,10 @@ The application sends embedding requests to the LiteLLM proxy and uses its key-i
 - `EMBEDDING__MODEL` - LiteLLM model alias for an embedding deployment
 - `EMBEDDING__BASE_URL` - LiteLLM proxy URL (e.g., "http://localhost:4000")
 - `EMBEDDING__DIMENSIONS` - Embedding dimensions (the current PGVector column is fixed at 3072)
-- `LITELLM_API_KEY` - LiteLLM admin key used to look up incoming virtual keys
+- `LITELLM_API_KEY` - LiteLLM admin credential used to validate virtual keys and update their vector-store permissions
 - `VECTOR_STORE_API_BASE` - URL LiteLLM uses to call this app (use the Kubernetes Service URL in-cluster)
-- `LITELLM_VECTOR_STORE_REGISTRY_API_KEY` - A non-admin LiteLLM management key assigned to a private, app-only team
-- `LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID` - The private team's ID; the app checks that the registry key belongs to it
+- `LITELLM_VECTOR_STORE_REGISTRY_API_KEY` - Separate, non-admin LiteLLM key assigned to a private, app-only team; used to register and delete stores
+- `LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID` - The ID of that private team, used to verify the registry key's team membership
 
 ## Integrate with an existing LiteLLM installation
 
@@ -173,9 +173,19 @@ LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID=<private-registry-team-id>
 VECTOR_STORE_API_BASE=http://litellm-pgvector.litellm-pgvector.svc.cluster.local:8000
 ```
 
-The `LITELLM_API_KEY` value must be allowed to call `/key/info` and `/key/update`; keep it secret. Create a private LiteLLM team for the app's registry key, put no end-user keys in that team, and grant the registry key access to `/vector_store/new` and `/vector_store/delete`. LiteLLM assigns registered stores to the registry key's team. The app then adds the new store ID to the creating key's `object_permission.vector_stores` allowlist. This lets the creating key and LiteLLM proxy admins access the store while other users and teams are denied. The grant is attached to the exact API key used to create the store; use that key for subsequent LiteLLM requests. The app verifies the registry key's team ID before registering a store. Do not put user keys in the private registry team: LiteLLM grants team members access to every store registered by that team.
+These three values have different roles:
 
-Users create stores by calling this app's `POST /v1/vector_stores` endpoint with their own LiteLLM virtual key. The app creates a user-owned database row and registers it in LiteLLM with the `pg_vector` provider and this app's API base URL. The resulting store appears in LiteLLM's Vector Stores UI; users do not need to manually choose or copy a UUID there. Use a key with a LiteLLM `user_id`; team membership does not make the app's database store team-shared. Configure the embedding alias in LiteLLM and ensure it returns 3072-dimensional vectors, matching the app's fixed PGVector column.
+| Setting | Value to provide | How the app uses it |
+| --- | --- | --- |
+| `LITELLM_API_KEY` | A LiteLLM proxy admin credential authorized to call `/key/info` and `/key/update` | Sends it to `/key/info` to validate incoming user keys and check the registry key's team. Sends it to `/key/update` to grant the new store to the creating user's key. This is an internal admin credential, not the key users should send when creating a store. |
+| `LITELLM_VECTOR_STORE_REGISTRY_API_KEY` | A **different, non-admin** LiteLLM management key belonging to a dedicated private team | Sends it to `/vector_store/new` to register a store and `/vector_store/delete` to remove a registration. LiteLLM associates stores registered with this key with its team. It does not need admin access to `/key/info` or `/key/update`. |
+| `LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID` | The LiteLLM `team_id` of that dedicated team, **not** a key or user ID | Compares it with the registry key's `team_id` returned by `/key/info` before registering a store. Registration fails if they differ or if the creating key belongs to the registry team. This ID is not a secret. |
+
+Use two distinct keys: the admin key needs permission to inspect and update user keys, while the registry key needs only the vector-store management routes and determines which LiteLLM team owns the registrations. Create a private LiteLLM team for the registry key, grant that key access to `/vector_store/new` and `/vector_store/delete`, and put no end-user keys in the team. LiteLLM grants team members access to stores registered under their team. Keep both API keys secret; in the Kubernetes deployment, the keys belong in the Secret and the team ID belongs in the ConfigMap.
+
+Users create stores by calling this app's `POST /v1/vector_stores` endpoint with their **own** LiteLLM virtual key, which must have a LiteLLM `user_id`. The app validates that key with the admin credential, creates a user-owned database row, and registers the store in LiteLLM with the registry key, the `pg_vector` provider, and this app's API base URL. It then uses the admin credential to add the store ID to the creating key's `object_permission.vector_stores` allowlist. The grant applies to that exact user key, so use the same key for subsequent LiteLLM requests. LiteLLM proxy admins can also access the store; end users outside the private registry team need their own key to be granted access.
+
+The store appears in LiteLLM's Vector Stores UI; users do not need to manually choose or copy a UUID there. Team membership does not make the app's database store team-shared. Configure the embedding alias in LiteLLM and ensure it returns 3072-dimensional vectors, matching the app's fixed PGVector column.
 
 This registration flow secures newly created stores. Existing LiteLLM vector-store registrations keep their current LiteLLM access settings; review and remove or re-register any legacy team-shared stores if they also need to become private.
 
