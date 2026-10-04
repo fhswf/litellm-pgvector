@@ -1,7 +1,5 @@
 from docling.document_converter import DocumentConverter
 from docling_core.types.doc.document import DoclingDocument
-from docling_core.transforms.chunker.line_chunker import LineBasedTokenChunker
-from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 from transformers import AutoTokenizer
 
 class Document():
@@ -13,24 +11,21 @@ class Document():
         result = converter.convert(filepath)
         self._document = result.document
 
-    def compute_chunks(self) -> list[str]:
-        # TODO check if this is a good model for tokenization
-        tokenizer = HuggingFaceTokenizer(
-            tokenizer=AutoTokenizer.from_pretrained(
-                "sentence-transformers/all-MiniLM-L6-v2"
-            ),
-            max_tokens=25,
-        )
-
-        chunker = LineBasedTokenChunker(
-            tokenizer=tokenizer,
-            prefix="",  # No prefix for general documents,
-            omit_prefix_on_overflow=False
-        ) # pyright: ignore[reportCallIssue]
-
-        chunks = list(chunker.chunk(self._document))
-        chunk_texts = []
-        for chunk in chunks:
-            chunk_texts.append(chunk.text)
-
-        return chunk_texts
+    def compute_chunks(
+        self,
+        max_chunk_size_tokens: int = 800,
+        chunk_overlap_tokens: int = 400,
+    ) -> list[str]:
+        tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        tokens = tokenizer.encode(self._document.export_to_markdown(), add_special_tokens=False)
+        step = max_chunk_size_tokens - chunk_overlap_tokens
+        chunks = []
+        for start in range(0, len(tokens), step):
+            chunk = tokenizer.decode(
+                tokens[start : start + max_chunk_size_tokens], skip_special_tokens=True
+            ).strip()
+            if chunk:
+                chunks.append(chunk)
+            if start + max_chunk_size_tokens >= len(tokens):
+                break
+        return chunks

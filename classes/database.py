@@ -48,7 +48,10 @@ class VectorStoreFile(SQLModel, table=True):
     vector_store_id: uuid.UUID = Field(foreign_key="vectorstore.id", ondelete="CASCADE")
     attributes: dict | None = Field(sa_column=Column(JSONB))
     chunking_strategy: str
+    chunking_strategy_config: dict | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
     usage_bytes: int
+    status: str = Field(default="completed", nullable=False)
+    last_error: dict | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
     created_at: datetime = Field(sa_column=Column(TIMESTAMP), default_factory=lambda: datetime.now())
     embeddings: list[Embedding] = Relationship(cascade_delete=True)
 
@@ -73,12 +76,17 @@ class Database:
     def __init__(self):
         # self._engine = create_engine(settings.database_url_2)
         # psycopg2 tends to choke on = signs in the database uri, so we replace it
-        self._engine = create_engine(quote_plus(settings.database_url, safe=":/?_@"))
-        with self._engine.connect() as conn:
+        self._engine = create_engine(quote_plus(settings.database_url, safe=":/?_@"), pool_pre_ping=True)
+        with self._engine.begin() as conn:
             if not conn.dialect.has_schema(conn, settings.database_schema):
                 conn.execute(CreateSchema(settings.database_schema))
-                conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
-                conn.commit()
+            conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
+
+            schema = conn.dialect.identifier_preparer.quote(settings.database_schema)
+            # Existing installations predate file ingestion status tracking.
+            conn.execute(text(f"ALTER TABLE IF EXISTS {schema}.vectorstorefile ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'completed'"))
+            conn.execute(text(f"ALTER TABLE IF EXISTS {schema}.vectorstorefile ADD COLUMN IF NOT EXISTS last_error JSONB"))
+            conn.execute(text(f"ALTER TABLE IF EXISTS {schema}.vectorstorefile ADD COLUMN IF NOT EXISTS chunking_strategy_config JSONB"))
 
         SQLModel.metadata.create_all(self._engine)
 

@@ -1,4 +1,6 @@
 import time
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -6,13 +8,28 @@ from typing import Annotated
 
 from config import settings
 from routers import files, vector_stores
+from classes.ingestion import run_ingestion_worker
 
 load_dotenv()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    worker = asyncio.create_task(run_ingestion_worker())
+    try:
+        yield
+    finally:
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
 
 app = FastAPI(
     title="OpenAI Vector Stores API",
     description="OpenAI-compatible Vector Stores API using PGVector",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.include_router(files.router)

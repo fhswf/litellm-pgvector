@@ -1,5 +1,5 @@
 from typing import Optional, Dict, Any, List, Union, Annotated
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from datetime import datetime
 from typing_extensions import Literal, TypeAlias
 from fastapi import UploadFile, Form
@@ -90,8 +90,14 @@ class VectorStoreListResponse(BaseModel):
 
 
 class StaticFileChunkingStrategy(BaseModel):
-    chunk_overlap_tokens: int
-    max_chunk_size_tokens: int
+    chunk_overlap_tokens: int = Field(ge=0)
+    max_chunk_size_tokens: int = Field(ge=100, le=4096)
+
+    @model_validator(mode="after")
+    def validate_overlap(self):
+        if self.chunk_overlap_tokens > self.max_chunk_size_tokens // 2:
+            raise ValueError("chunk_overlap_tokens must not exceed half of max_chunk_size_tokens")
+        return self
 
 
 class AutoFileChunkingStrategyParam(BaseModel):
@@ -99,8 +105,12 @@ class AutoFileChunkingStrategyParam(BaseModel):
 
 
 class StaticFileChunkingStrategyObjectParam(BaseModel):
-    type: Literal["auto"]
+    type: Literal["static"]
     static: StaticFileChunkingStrategy
+
+
+class OtherFileChunkingStrategyObject(BaseModel):
+    type: Literal["other"] = "other"
 
 
 FileChunkingStrategyParam: TypeAlias = Union[
@@ -127,7 +137,7 @@ class UploadFileRequest(BaseModel):
 
 class UploadFileResponse(BaseModel):
     id: str
-    object: Literal["file"]
+    object: Literal["file"] = "file"
     bytes: int
     created_at: int
     filename: str
@@ -139,12 +149,26 @@ class VectorStoreFileResponse(BaseModel):
     id: str
     created_at: int
     last_error: Optional[Dict[str, Any]] = None
-    object: str = "vector_store.file"
-    status: str
+    object: Literal["vector_store.file"] = "vector_store.file"
+    status: Literal["in_progress", "completed", "failed", "cancelled"]
     usage_bytes: int
     vector_store_id: str
     attributes: Optional[Dict[str, Any]] = None
-    chunking_strategy: Optional[StaticFileChunkingStrategy] = None
+    chunking_strategy: Optional[Union[StaticFileChunkingStrategyObjectParam, OtherFileChunkingStrategyObject]] = None
+
+
+class VectorStoreFileListResponse(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[VectorStoreFileResponse]
+    first_id: Optional[str] = None
+    last_id: Optional[str] = None
+    has_more: bool = False
+
+
+class VectorStoreFileDeletedResponse(BaseModel):
+    id: str
+    object: Literal["vector_store.file.deleted"] = "vector_store.file.deleted"
+    deleted: bool = True
 
 class DeleteFileResponse(BaseModel):
     id: str

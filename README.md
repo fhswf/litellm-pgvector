@@ -1,12 +1,12 @@
 # TODO (28.09.2026)
 - [X] Prevent a file that has already been inserted into a vector store from being inserted a second time
-- [ ] Allow deletion of files just from the vector store without also deleting it from the S3 storage. At the moment, the /delete route also deletes the S3 file
-- [ ] Add async job queue for embeddings. At the moment, everything is done synchronously within the request thread
+- [X] Allow deletion of files just from the vector store without also deleting it from S3 storage
+- [X] Queue file ingestion and embedding work outside the request
 - [ ] Optimize tokenization, pre-install required dockling packages during container image creation. At the moment, dockling downloads required dependencies on the fly depending on the uploaded file format
 - [ ] Add format filter for uploaded files
-- [ ] Optimize document chunking, tokenization. At the moment, dockling tokenizes documents on the CPU in the request thread with a small model downloaded from huggingface
+- [ ] Optimize document chunking and tokenization; the ingestion worker currently downloads its tokenizer from Hugging Face on first use
 - [ ] Implement quota system for S3 storage, vector DB storage, amount of created vector stores
-- [ ] Verify file ownership/team when attaching a file to a vector store
+- [X] Verify file ownership when attaching a file to a vector store
 - [ ] Split project into more files to increase readability
 
 # SETUP
@@ -33,6 +33,29 @@ A FastAPI application that provides OpenAI-compatible vector store endpoints usi
 - ⚡ FastAPI with async support
 
 ## API Endpoints
+
+### Upload and ingest a file
+
+The upload stores the original file and returns its ID. Attach that ID to a vector store to start parsing and embedding. Attachment returns `status: "in_progress"` immediately; poll the attachment until it reaches `completed` or `failed`.
+
+```bash
+curl -sS --fail-with-body https://pgvector.fh-swf.cloud/v1/files \
+  -H "Authorization: Bearer $LITELLM_USER_KEY" \
+  -F 'purpose=assistants' \
+  -F 'file=@README.md;type=text/markdown'
+
+curl -sS --fail-with-body -X POST \
+  "https://pgvector.fh-swf.cloud/v1/vector_stores/$VECTOR_STORE_ID/files" \
+  -H "Authorization: Bearer $LITELLM_USER_KEY" \
+  -H 'Content-Type: application/json' \
+  -d "{\"file_id\":\"$FILE_ID\"}"
+
+curl -sS --fail-with-body \
+  "https://pgvector.fh-swf.cloud/v1/vector_stores/$VECTOR_STORE_ID/files/$FILE_ID" \
+  -H "Authorization: Bearer $LITELLM_USER_KEY"
+```
+
+The file ID in the attachment response is the original uploaded file ID. `GET /v1/vector_stores/{id}/files` lists attachments, and `DELETE /v1/vector_stores/{id}/files/{file_id}` removes an attachment while keeping the uploaded file. `DELETE /v1/files/{file_id}` deletes the original file and all its attachments. Pending jobs are stored in PostgreSQL and resumed after an application restart. The worker uses `LITELLM_API_KEY` to call the embedding model, so configure that key with access to the embedding alias.
 
 ### 1. Create Vector Store
 ```bash

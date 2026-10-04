@@ -13,7 +13,6 @@ from models import (
     VectorStoreSearchRequest,
     SearchResult,
     ContentChunk,
-    VectorStoreRetrieveResponse,
     VectorStoreDeleteResponse,
     VectorStoreUpdateRequest,
     VectorStoreUpdateResponse
@@ -329,7 +328,8 @@ async def delete_vector_store(vector_store_id: str, litellm_vkey_info = Depends(
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
-@router.get("/vector_stores/{vector_store_id}/", response_model=VectorStoreRetrieveResponse)
+@router.get("/v1/vector_stores/{vector_store_id}", response_model=VectorStoreResponse)
+@router.get("/vector_stores/{vector_store_id}/", response_model=VectorStoreResponse, include_in_schema=False)
 async def retrieve_vector_store(vector_store_id: str, litellm_vkey_info = Depends(get_litellm_vkey_info)):
     try:
         statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
@@ -342,12 +342,17 @@ async def retrieve_vector_store(vector_store_id: str, litellm_vkey_info = Depend
         if not store:
             raise HTTPException(status_code=404, detail="Vector store not found")
 
-        return VectorStoreRetrieveResponse(
+        return VectorStoreResponse(
             id=store.id.hex,
             name=store.name,
             created_at=int(store.created_at.timestamp()),
             file_counts=store.file_counts,
-            usage_bytes=store.usage_bytes or 0
+            usage_bytes=store.usage_bytes or 0,
+            status=store.status,
+            expires_after=store.expires_after,
+            expires_at=int(store.expires_at.timestamp()) if store.expires_at else None,
+            last_active_at=int(store.last_active_at.timestamp()) if store.last_active_at else None,
+            metadata=store.store_metadata,
         )
 
     except HTTPException:

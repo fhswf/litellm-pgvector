@@ -1,9 +1,9 @@
 import os
 import uuid
+import asyncio
 from .abstract_file_handler import AbstractFileHandler
 from fastapi import UploadFile, HTTPException
 from pathlib import Path
-from hashlib import sha256
 from light_s3_client import Client
 from typing import Optional
 from io import BytesIO
@@ -34,12 +34,11 @@ class S3FileHandler(AbstractFileHandler):
         try:
             file.file.seek(0)
             contents = await file.read()
-            res = self._s3_client.upload_fileobj(
+            await asyncio.to_thread(self._s3_client.upload_fileobj,
                 Fileobj=BytesIO(contents),
                 Bucket=self._s3_bucket,
                 Key=key_with_subdir
                 )
-            print(res)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"S3 upload failed: {e}")
         finally:
@@ -48,7 +47,8 @@ class S3FileHandler(AbstractFileHandler):
         return {
             "filename": file.filename,
             "s3_key": key_with_subdir,
-            "bucket": self._s3_bucket
+            "bucket": self._s3_bucket,
+            "bytes": len(contents),
         }
 
     @classmethod
@@ -58,7 +58,7 @@ class S3FileHandler(AbstractFileHandler):
             raise HTTPException(status_code=404, detail="File not found")
 
         Path("/tmp/litellm-vectordb-connector/files/").mkdir(parents=True, exist_ok=True)
-        tmp_filename_on_disk = sha256(file.encode('utf-8')).hexdigest()
+        tmp_filename_on_disk = uuid.uuid4().hex
         filename, file_extension = os.path.splitext(file)
         tmp_filepath_on_disk = os.path.join("/tmp/litellm-vectordb-connector/files/", tmp_filename_on_disk) + file_extension
         return self._s3_client.download_file(self._s3_bucket, file, tmp_filepath_on_disk)
