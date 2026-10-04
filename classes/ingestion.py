@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import func, text
+from sqlalchemy.exc import OperationalError
 from sqlmodel import select
 
 from config import settings
@@ -104,6 +105,7 @@ def _finish_job(job_id: UUID, chunks: list[str], vectors: list[list[float]]) -> 
         raise IngestionFailure("server_error", "Embedding response did not match the file chunks")
 
     with database_instance.session() as session:
+        session.exec(text("SET LOCAL lock_timeout = '2s'"))
         job = session.exec(select(VectorStoreFile).where(VectorStoreFile.id == job_id).with_for_update()).first()
         if job is None or job.status != "in_progress":
             return
@@ -130,6 +132,7 @@ def _finish_job(job_id: UUID, chunks: list[str], vectors: list[list[float]]) -> 
 
 def _fail_job(job_id: UUID, code: str, message: str) -> None:
     with database_instance.session() as session:
+        session.exec(text("SET LOCAL lock_timeout = '2s'"))
         job = session.exec(select(VectorStoreFile).where(VectorStoreFile.id == job_id).with_for_update()).first()
         if job is None or job.status != "in_progress":
             return
@@ -143,7 +146,7 @@ def _fail_job(job_id: UUID, code: str, message: str) -> None:
 
 async def _process_job(job_id: UUID) -> None:
     try:
-        job_input = _job_input(job_id)
+        job_input = await asyncio.to_thread(_job_input, job_id)
         if job_input is None:
             return
         s3_key, strategy = job_input
@@ -162,22 +165,28 @@ async def _process_job(job_id: UUID) -> None:
             raise IngestionFailure("server_error", "Embedding service key is not configured")
         for start in range(0, len(chunks), 32):
             vectors.extend(await embedding_service.generate_embeddings(chunks[start:start + 32], embedding_key))
-        _finish_job(job_id, chunks, vectors)
+        await asyncio.to_thread(_finish_job, job_id, chunks, vectors)
     except asyncio.CancelledError:
         raise
     except IngestionFailure as exc:
         logger.warning("File ingestion failed for %s: %s", job_id, exc.message)
-        _fail_job(job_id, exc.code, exc.message)
+        await asyncio.to_thread(_fail_job, job_id, exc.code, exc.message)
+    except OperationalError as exc:
+        if getattr(exc.orig, "pgcode", None) == "55P03":
+            logger.warning("Database row is locked; retrying ingestion for %s", job_id)
+            return
+        logger.exception("File ingestion failed for %s", job_id)
+        await asyncio.to_thread(_fail_job, job_id, "server_error", "File ingestion failed")
     except Exception:
         logger.exception("File ingestion failed for %s", job_id)
-        _fail_job(job_id, "server_error", "File ingestion failed")
+        await asyncio.to_thread(_fail_job, job_id, "server_error", "File ingestion failed")
 
 
 async def run_ingestion_worker() -> None:
     """Poll persisted jobs; PostgreSQL advisory locks coordinate app replicas."""
     while True:
         try:
-            for job_id in _pending_jobs():
+            for job_id in await asyncio.to_thread(_pending_jobs):
                 lock_id = int.from_bytes(job_id.bytes[:8], "big", signed=True)
                 with database_instance._engine.connect() as connection:
                     acquired = connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_id})

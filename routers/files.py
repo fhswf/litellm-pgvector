@@ -5,7 +5,8 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query
-from sqlalchemy import tuple_
+from sqlalchemy import text, tuple_
+from sqlalchemy.exc import OperationalError
 from sqlmodel import select
 
 from classes.database import File, VectorStore, VectorStoreFile, database_instance
@@ -161,7 +162,7 @@ async def delete_file(file_id: UUID, litellm_vkey_info=Depends(get_litellm_vkey_
     "/v1/vector_stores/{vector_store_id}/files",
     response_model=VectorStoreFileResponse,
 )
-async def create_vector_store_file(
+def create_vector_store_file(
     vector_store_id: UUID,
     request: VectorStoreFileRequest,
     litellm_vkey_info=Depends(get_litellm_vkey_info),
@@ -171,48 +172,59 @@ async def create_vector_store_file(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid file ID") from exc
 
-    with database_instance.session() as session:
-        store = _store(session, vector_store_id, litellm_vkey_info)
-        # Lock the store row so two concurrent requests cannot create the same
-        # attachment before either transaction commits.
-        session.exec(select(VectorStore).where(VectorStore.id == store.id).with_for_update()).first()
-        statement = scope_to_litellm_user(
-            select(File).where(File.id == file_id), File, litellm_vkey_info
-        )
-        file = session.exec(statement).first()
-        if file is None or file.user_id != store.user_id:
-            raise HTTPException(status_code=404, detail="File not found")
-        existing = session.exec(
-            select(VectorStoreFile).where(
-                VectorStoreFile.vector_store_id == store.id,
-                VectorStoreFile.file_id == file_id,
+    try:
+        with database_instance.session() as session:
+            # A stalled transaction must not hold the request indefinitely.
+            session.exec(text("SET LOCAL lock_timeout = '2s'"))
+            store = _store(session, vector_store_id, litellm_vkey_info)
+            # Lock the store row so two concurrent requests cannot create the same
+            # attachment before either transaction commits.
+            session.exec(select(VectorStore).where(VectorStore.id == store.id).with_for_update()).first()
+            statement = scope_to_litellm_user(
+                select(File).where(File.id == file_id), File, litellm_vkey_info
             )
-        ).first()
-        if existing is not None:
-            raise HTTPException(status_code=400, detail="File is already attached to this vector store")
+            file = session.exec(statement).first()
+            if file is None or file.user_id != store.user_id:
+                raise HTTPException(status_code=404, detail="File not found")
+            existing = session.exec(
+                select(VectorStoreFile).where(
+                    VectorStoreFile.vector_store_id == store.id,
+                    VectorStoreFile.file_id == file_id,
+                )
+            ).first()
+            if existing is not None:
+                raise HTTPException(status_code=400, detail="File is already attached to this vector store")
 
-        strategy = request.chunking_strategy
-        effective_strategy = (
-            strategy.model_dump() if strategy and strategy.type == "static"
-            else DEFAULT_CHUNKING_STRATEGY.copy()
-        )
-        attachment = VectorStoreFile(
-            file_id=file_id,
-            user_id=store.user_id,
-            team_id=store.team_id,
-            vector_store_id=store.id,
-            attributes=request.attributes,
-            chunking_strategy="static",
-            chunking_strategy_config=effective_strategy,
-            usage_bytes=0,
-            status="in_progress",
-            created_at=_utc_now(),
-        )
-        session.add(attachment)
-        session.flush()
-        refresh_store_usage(session, store.id)
-        session.commit()
-        return _attachment_response(attachment)
+            strategy = request.chunking_strategy
+            effective_strategy = (
+                strategy.model_dump() if strategy and strategy.type == "static"
+                else DEFAULT_CHUNKING_STRATEGY.copy()
+            )
+            attachment = VectorStoreFile(
+                file_id=file_id,
+                user_id=store.user_id,
+                team_id=store.team_id,
+                vector_store_id=store.id,
+                attributes=request.attributes,
+                chunking_strategy="static",
+                chunking_strategy_config=effective_strategy,
+                usage_bytes=0,
+                status="in_progress",
+                created_at=_utc_now(),
+            )
+            session.add(attachment)
+            session.flush()
+            refresh_store_usage(session, store.id)
+            session.commit()
+            return _attachment_response(attachment)
+    except OperationalError as exc:
+        if getattr(exc.orig, "pgcode", None) == "55P03":
+            raise HTTPException(
+                status_code=503,
+                detail="Vector store is busy; retry shortly",
+                headers={"Retry-After": "2"},
+            ) from exc
+        raise
 
 
 @router.get(

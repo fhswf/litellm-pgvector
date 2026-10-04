@@ -16,8 +16,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import inspect, text
 from sqlmodel import select
+
+from models import EmbeddingCreateRequest
 
 
 class FakeS3:
@@ -285,6 +288,84 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/v1/files/{file_id}").status_code, 200)
         with self.db.session() as session:
             self.assertEqual(session.get(self.VectorStore, self.store_id).file_counts["total"], 0)
+
+    def test_locked_store_does_not_stall_health(self):
+        file_id = self.upload()
+
+        async def check_locked_request():
+            transport = ASGITransport(app=self.app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                with self.db.session() as holder:
+                    holder.exec(
+                        select(self.VectorStore)
+                        .where(self.VectorStore.id == self.store_id)
+                        .with_for_update()
+                    ).first()
+                    request = asyncio.create_task(client.post(
+                        f"/v1/vector_stores/{self.store_id.hex}/files",
+                        json={"file_id": file_id},
+                    ))
+                    await asyncio.sleep(0.2)
+                    health = await asyncio.wait_for(client.get("/health"), timeout=1)
+                    self.assertEqual(health.status_code, 200)
+                    busy = await asyncio.wait_for(request, timeout=4)
+                    self.assertEqual(busy.status_code, 503, busy.text)
+                    self.assertEqual(busy.headers["retry-after"], "2")
+
+        asyncio.run(check_locked_request())
+        self.attach(file_id)
+
+    def test_legacy_embedding_insert_commits_and_releases_lock(self):
+        file_id = self.upload()
+        self.attach(file_id)
+        with self.db.session() as session:
+            attachment = session.exec(
+                select(self.VectorStoreFile).where(
+                    self.VectorStoreFile.vector_store_id == self.store_id,
+                    self.VectorStoreFile.file_id == UUID(file_id),
+                )
+            ).first()
+            attachment_id = attachment.id
+
+        from embedding_service import embedding_service
+
+        result = asyncio.run(embedding_service.insert_embeddings(
+            self.store_id.hex,
+            attachment_id.hex,
+            [EmbeddingCreateRequest(content="sample", embedding=[0.0] * 3072)],
+            self.key_info,
+        ))
+        self.assertEqual(result.total_content_length, len("sample"))
+        self.assertEqual(len(result.data), 1)
+        with self.db.session() as session:
+            store = session.exec(
+                select(self.VectorStore)
+                .where(self.VectorStore.id == self.store_id)
+                .with_for_update(nowait=True)
+            ).first()
+            self.assertEqual(store.file_counts["completed"], 1)
+            self.assertEqual(store.usage_bytes, len("sample"))
+            embeddings = session.exec(
+                select(self.Embedding).where(
+                    self.Embedding.vector_store_file_id == attachment_id
+                )
+            ).all()
+            self.assertEqual(len(embeddings), 1)
+
+    def test_search_releases_database_session(self):
+        from embedding_service import embedding_service
+
+        async def fake_embedding(text, key):
+            return [0.0] * 3072
+
+        checked_out = self.db._engine.pool.checkedout()
+        with patch.object(embedding_service, "generate_embedding", side_effect=fake_embedding):
+            response = self.client.post(
+                f"/v1/vector_stores/{self.store_id.hex}/search",
+                json={"query": "sample"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.db._engine.pool.checkedout(), checked_out)
 
     def test_listing_pagination_and_owner_scope(self):
         first_id = self.upload(body=b"first")

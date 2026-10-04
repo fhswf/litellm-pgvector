@@ -1,3 +1,4 @@
+import asyncio
 import datetime, os
 from fastapi import APIRouter, Depends, HTTPException, Form
 from typing import Annotated, Optional
@@ -36,6 +37,21 @@ def _scope_to_owner(statement, model, litellm_vkey_info):
     if is_litellm_admin(litellm_vkey_info):
         return statement
     return statement.where(model.user_id == get_litellm_user_id(litellm_vkey_info))
+
+
+def _search_store_id(vector_store_id: UUID, litellm_vkey_info: dict) -> UUID:
+    statement = select(VectorStore).where(col(VectorStore.id) == vector_store_id)
+    statement = _scope_to_owner(statement, VectorStore, litellm_vkey_info)
+    with database_instance.session() as session:
+        store = session.exec(statement).first()
+        if store is None:
+            raise HTTPException(status_code=404, detail="Vector store not found")
+        return store.id
+
+
+def _search_embeddings(statement):
+    with database_instance.session() as session:
+        return session.exec(statement).all()
 
 @router.post("/v1/vector_stores", response_model=VectorStoreResponse)
 async def create_vector_store(
@@ -221,14 +237,9 @@ async def search_vector_store(
     Search a vector store for similar content.
     """
     try:
-        statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
-        statement = _scope_to_owner(statement, VectorStore, litellm_vkey_info)
-
-        session = database_instance.session()
-        res = session.exec(statement)
-        store = res.first()
-        if not store:
-            raise HTTPException(status_code=404, detail="Vector store not found")
+        store_id = await asyncio.to_thread(
+            _search_store_id, UUID(vector_store_id), litellm_vkey_info
+        )
 
         # Generate embedding for query
         query_embedding = await embedding_service.generate_embedding(request.query, litellm_vkey_info['key'])
@@ -242,7 +253,7 @@ async def search_vector_store(
             Embedding.content, 
             Embedding.embedding_metadata, 
             Embedding.embedding.l2_distance(query_embedding).label('distance') # pyright: ignore[reportAttributeAccessIssue]
-            ).where(col(Embedding.vector_store_id) == store.id)
+            ).where(col(Embedding.vector_store_id) == store_id)
 
         if request.filters:
             for key, value in request.filters.items():
@@ -250,7 +261,7 @@ async def search_vector_store(
 
 
         embedding_statement = embedding_statement.order_by(label('distance', col(Embedding.embedding)).asc()).limit(limit)
-        embedding_results = session.exec(embedding_statement).all()
+        embedding_results = await asyncio.to_thread(_search_embeddings, embedding_statement)
 
         # Convert results to SearchResult objects
         search_results = []

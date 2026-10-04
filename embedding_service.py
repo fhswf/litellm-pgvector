@@ -1,3 +1,4 @@
+import asyncio
 from typing import List, Optional
 from fastapi import HTTPException
 from config import settings, EmbeddingConfig
@@ -108,22 +109,37 @@ class EmbeddingService:
         Add multiple embeddings to a vector store in batch.
         """
         try:
-            # TODO deduplicate
-            # Check if vector store exists
+            return await asyncio.to_thread(
+                self._insert_embeddings_sync,
+                vector_store_id,
+                vector_store_file_id,
+                embeddings,
+                litellm_vkey_info,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create embeddings batch: {str(e)}"
+            )
+
+    def _insert_embeddings_sync(
+            self,
+            vector_store_id: str,
+            vector_store_file_id: str,
+            embeddings: List[EmbeddingCreateRequest],
+            litellm_vkey_info,
+        ) -> EmbeddingBatchCreateResponse:
+        # Keep the insert and the statistics update in one transaction, and
+        # always return the connection to the pool when the request ends.
+        with database_instance.session() as session:
             statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
             statement = scope_to_litellm_user(statement, VectorStore, litellm_vkey_info)
-
-            session = database_instance.session()
-
-            res = session.exec(statement)
-            store = res.first()
-            if not store:
+            if session.exec(statement).first() is None:
                 raise HTTPException(status_code=404, detail="Vector store not found")
-            
-            vector_store = session.exec(statement).first()
-            if not vector_store:
-                raise HTTPException(status_code=404, detail="Vector store not found")
-
             if not embeddings:
                 raise HTTPException(status_code=400, detail="No embeddings provided")
 
@@ -135,17 +151,15 @@ class EmbeddingService:
                     vector_store_file_id=UUID(vector_store_file_id),
                     content=embedding_req.content,
                     embedding=embedding_req.embedding + [0] * (3072 - len(embedding_req.embedding)),
-                    embedding_metadata=embedding_req.metadata or {}
+                    embedding_metadata=embedding_req.metadata or {},
                 )
                 new_embeddings.append(new_embedding)
                 total_content_length += len(new_embedding.content)
 
             session.add_all(new_embeddings)
-            session.commit()
+            session.flush()
 
-            # Update vector store statistics
-            # TODO do this through the ORM classes
-            # TODO add counter to in_progress when adding the job to the job queue
+            # TODO: derive counters from attachments when this legacy path is used.
             update_statistics_statement = f"""
                 UPDATE {settings.database_schema}.vectorstore
                 SET
@@ -162,14 +176,14 @@ class EmbeddingService:
                     last_active_at = NOW()
                 WHERE id = :vector_store_id
                 """
-            
-            res = session.connection().execute(
+            session.execute(
                 text(update_statistics_statement),
                 {
-                    'vector_store_id': vector_store_id,
-                    'total_content_length': total_content_length
-                }
+                    "vector_store_id": UUID(vector_store_id),
+                    "total_content_length": total_content_length,
+                },
             )
+            session.commit()
 
             # Convert results to response format
             result_embeddings = []
@@ -189,16 +203,6 @@ class EmbeddingService:
                 data=result_embeddings,
                 created=int(time()),
                 total_content_length=total_content_length,
-            )
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            raise HTTPException(
-                status_code=500, detail=f"Failed to create embeddings batch: {str(e)}"
             )
 
 # Global embedding service instance
