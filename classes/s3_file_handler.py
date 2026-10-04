@@ -15,13 +15,13 @@ class S3FileHandler(AbstractFileHandler):
     @classmethod
     def __init__(self, region: str, access_key: str, secret_key: str, bucket: str, host: Optional[str] = None):
         self._s3_client = Client(
-            region="us-west-1",
+            region=region,
             access_key=access_key,
             secret_key=secret_key,
-            server=host
+            server=host or None
             )
 
-        self._s3_bucket = "vectorstore"
+        self._s3_bucket = bucket
 
 
     @classmethod
@@ -36,7 +36,7 @@ class S3FileHandler(AbstractFileHandler):
             contents = await file.read()
             res = self._s3_client.upload_fileobj(
                 Fileobj=BytesIO(contents),
-                Bucket="vectorstore",
+                Bucket=self._s3_bucket,
                 Key=key_with_subdir
                 )
             print(res)
