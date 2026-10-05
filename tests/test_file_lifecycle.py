@@ -75,18 +75,22 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
         cls.schema = f"file_api_test_{uuid4().hex[:12]}"
         query = [(key, value) for key, value in parse_qsl(parts.query) if key != "schema"]
         query.append(("schema", cls.schema))
-        cls.original_database_url = os.environ.get("DATABASE_URL")
-        os.environ["DATABASE_URL"] = urlunsplit(
+        database_url = urlunsplit(
             (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
         )
 
         # Import after selecting the isolated schema: the app builds its engine
-        # and tables when classes.database is first imported.
+        # and tables when classes.database is first imported. Other tests may
+        # have already imported config, so update its shared settings instance.
+        from config import settings
+        database_url_patch = patch.object(settings, "database_url", database_url)
+        database_url_patch.start()
+        cls.addClassCleanup(database_url_patch.stop)
+
         from main import app
         from routers import files
         from classes import ingestion
         from classes.database import Database, Embedding, File, VectorStore, VectorStoreFile, database_instance
-        from config import settings
         from util import get_litellm_vkey_info
 
         cls.app = app
@@ -103,17 +107,11 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        try:
-            cls.app.dependency_overrides.pop(cls.auth_dependency, None)
-            with cls.db._engine.begin() as connection:
-                schema = connection.dialect.identifier_preparer.quote(cls.schema)
-                connection.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
-            cls.db._engine.dispose()
-        finally:
-            if cls.original_database_url is None:
-                os.environ.pop("DATABASE_URL", None)
-            else:
-                os.environ["DATABASE_URL"] = cls.original_database_url
+        cls.app.dependency_overrides.pop(cls.auth_dependency, None)
+        with cls.db._engine.begin() as connection:
+            schema = connection.dialect.identifier_preparer.quote(cls.schema)
+            connection.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        cls.db._engine.dispose()
 
     def setUp(self):
         self.user_id = f"test-{uuid4().hex}"
