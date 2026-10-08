@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -385,6 +385,72 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
         self.assertEqual(self.attachment(first_id).status_code, 404)
         self.assertEqual(self.client.get(f"/v1/files/{first_id}").status_code, 404)
         self.key_info["info"]["user_id"] = self.user_id
+
+    def test_team_keys_share_stores_and_files_without_cross_team_access(self):
+        self.key_info = {
+            "info": {"user_id": self.user_id, "team_id": "team-a"},
+            "key": "team-creator-key",
+        }
+        with patch("routers.vector_stores.register_vector_store", new_callable=AsyncMock):
+            created = self.client.post("/v1/vector_stores", json={"name": "shared"})
+        self.assertEqual(created.status_code, 200, created.text)
+        shared_store_id = UUID(created.json()["id"])
+
+        try:
+            file_id = self.upload()
+            self.key_info = {
+                "info": {"team_id": "team-a"},
+                "key": "team-member-key",
+            }
+            self.assertEqual(
+                self.client.get(f"/v1/vector_stores/{shared_store_id.hex}").status_code,
+                200,
+            )
+            self.assertEqual(self.client.get(f"/v1/files/{file_id}").status_code, 200)
+            attached = self.client.post(
+                f"/v1/vector_stores/{shared_store_id.hex}/files",
+                json={"file_id": file_id},
+            )
+            self.assertEqual(attached.status_code, 200, attached.text)
+
+            self.key_info = {
+                "info": {"user_id": self.user_id, "team_id": "team-b"},
+                "key": "other-team-key",
+            }
+            self.assertEqual(
+                self.client.get(f"/v1/vector_stores/{shared_store_id.hex}").status_code,
+                404,
+            )
+            self.assertEqual(self.client.get(f"/v1/files/{file_id}").status_code, 404)
+        finally:
+            with self.db.session() as session:
+                store = session.get(self.VectorStore, shared_store_id)
+                if store is not None:
+                    session.delete(store)
+                    session.commit()
+
+    def test_team_only_key_can_create_a_store(self):
+        self.key_info = {"info": {"team_id": "team-a"}, "key": "team-key"}
+        with patch("routers.vector_stores.register_vector_store", new_callable=AsyncMock):
+            created = self.client.post("/v1/vector_stores", json={"name": "team only"})
+        self.assertEqual(created.status_code, 200, created.text)
+        store_id = UUID(created.json()["id"])
+        with self.db.session() as session:
+            store = session.get(self.VectorStore, store_id)
+            self.assertIsNone(store.user_id)
+            self.assertEqual(store.team_id, "team-a")
+            session.delete(store)
+            session.commit()
+
+    def test_user_stores_are_shared_by_keys_with_the_same_user(self):
+        self.key_info = {
+            "info": {"user_id": self.user_id},
+            "key": "second-user-key",
+        }
+        self.assertEqual(
+            self.client.get(f"/v1/vector_stores/{self.store_id.hex}").status_code,
+            200,
+        )
 
     def test_existing_table_receives_new_columns(self):
         file_id = self.upload()

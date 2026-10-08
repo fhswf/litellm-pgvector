@@ -16,6 +16,8 @@ data:
   VECTOR_STORE_PROVIDER: "openai"
   # Create a private LiteLLM team for the app's registry key and set its ID here.
   LITELLM_VECTOR_STORE_REGISTRY_TEAM_ID: "45a2745d-9d50-4953-99ff-3c5fb9839588"
+  # Enable only after the deployed LiteLLM proxy enforces user_id on vector stores.
+  LITELLM_USER_SCOPED_VECTOR_STORES: "false"
   # CNPG generates the matching application password in
   # `litellm-pgvector-db-app`; the Deployment supplies it through PGPASSWORD.
   DATABASE_URL: "postgresql://litellm_pgvector@litellm-pgvector-db-rw.litellm-pgvector.svc.cluster.local:5432/litellm_pgvector?schema=public"

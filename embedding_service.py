@@ -13,7 +13,7 @@ from sqlmodel import select, col, text
 from sqlalchemy import label
 
 from classes.database import VectorStore, VectorStoreFile, Embedding, database_instance
-from util import scope_to_litellm_user
+from util import scope_to_litellm_owner
 
 class EmbeddingService:
     """Service for generating embeddings using OpenAI SDK pointed at LiteLLM proxy"""
@@ -137,7 +137,7 @@ class EmbeddingService:
         # always return the connection to the pool when the request ends.
         with database_instance.session() as session:
             statement = select(VectorStore).where(col(VectorStore.id) == UUID(vector_store_id))
-            statement = scope_to_litellm_user(statement, VectorStore, litellm_vkey_info)
+            statement = scope_to_litellm_owner(statement, VectorStore, litellm_vkey_info)
             if session.exec(statement).first() is None:
                 raise HTTPException(status_code=404, detail="Vector store not found")
             if not embeddings:

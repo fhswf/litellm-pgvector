@@ -4,6 +4,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from config import settings
 from httpx import AsyncClient
+from sqlalchemy import and_, or_
 
 security = HTTPBearer()
 
@@ -38,17 +39,25 @@ def is_litellm_admin(litellm_vkey_info: dict) -> bool:
     return bool(litellm_vkey_info.get("is_admin"))
 
 
-def get_litellm_user_id(litellm_vkey_info: dict) -> str:
-    user_id = litellm_vkey_info.get("info", {}).get("user_id")
-    if not user_id:
+def get_litellm_owner_ids(litellm_vkey_info: dict) -> tuple[str | None, str | None]:
+    info = litellm_vkey_info.get("info") or {}
+    user_id = info.get("user_id")
+    team_id = info.get("team_id")
+    if not user_id and not team_id:
         raise HTTPException(
             status_code=403,
-            detail="A LiteLLM user ID is required for this operation",
+            detail="A LiteLLM user ID or team ID is required for this operation",
         )
-    return str(user_id)
+    return (str(user_id) if user_id else None, str(team_id) if team_id else None)
 
 
-def scope_to_litellm_user(statement, model, litellm_vkey_info: dict):
+def scope_to_litellm_owner(statement, model, litellm_vkey_info: dict):
     if is_litellm_admin(litellm_vkey_info):
         return statement
-    return statement.where(model.user_id == get_litellm_user_id(litellm_vkey_info))
+    user_id, team_id = get_litellm_owner_ids(litellm_vkey_info)
+    scopes = []
+    if user_id:
+        scopes.append(and_(model.team_id.is_(None), model.user_id == user_id))
+    if team_id:
+        scopes.append(model.team_id == team_id)
+    return statement.where(or_(*scopes))

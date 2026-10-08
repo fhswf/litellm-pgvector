@@ -19,7 +19,12 @@ from models import (
     VectorStoreUpdateResponse
 )
 
-from util import get_litellm_user_id, get_litellm_vkey_info, is_litellm_admin
+from util import (
+    get_litellm_owner_ids,
+    get_litellm_vkey_info,
+    is_litellm_admin,
+    scope_to_litellm_owner,
+)
 from litellm_registry import (
     LiteLLMRegistryError,
     delete_registered_vector_store,
@@ -34,9 +39,7 @@ router = APIRouter()
 
 
 def _scope_to_owner(statement, model, litellm_vkey_info):
-    if is_litellm_admin(litellm_vkey_info):
-        return statement
-    return statement.where(model.user_id == get_litellm_user_id(litellm_vkey_info))
+    return scope_to_litellm_owner(statement, model, litellm_vkey_info)
 
 
 def _search_store_id(vector_store_id: UUID, litellm_vkey_info: dict) -> UUID:
@@ -67,12 +70,12 @@ async def create_vector_store(
             detail="Create a vector store with the LiteLLM user's API key, not the admin key",
         )
 
-    user = get_litellm_user_id(litellm_vkey_info)
+    user_id, team_id = get_litellm_owner_ids(litellm_vkey_info)
     session = database_instance.session()
     store = VectorStore(
         name=request.name,
-        user_id=user,
-        team_id=None,
+        user_id=user_id,
+        team_id=team_id,
         file_counts={"in_progress": 0, "completed": 0, "failed": 0, "cancelled": 0, "total": 0},
         status="completed",
         usage_bytes=0,

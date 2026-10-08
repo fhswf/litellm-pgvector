@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     litellm_api_key: str = ""
     litellm_vector_store_registry_api_key: str = ""
     litellm_vector_store_registry_team_id: str = ""
+    litellm_user_scoped_vector_stores: bool = False
     vector_store_api_base: str = "http://localhost:8000"
     vector_store_provider: Literal["pg_vector", "openai"] = "pg_vector"
 

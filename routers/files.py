@@ -22,7 +22,12 @@ from models import (
     VectorStoreFileRequest,
     VectorStoreFileResponse,
 )
-from util import get_litellm_user_id, get_litellm_vkey_info, is_litellm_admin, scope_to_litellm_user
+from util import (
+    get_litellm_owner_ids,
+    get_litellm_vkey_info,
+    is_litellm_admin,
+    scope_to_litellm_owner,
+)
 
 
 router = APIRouter()
@@ -67,7 +72,7 @@ def _attachment_response(attachment: VectorStoreFile) -> VectorStoreFileResponse
 
 
 def _store(session, store_id: UUID, key_info: dict) -> VectorStore:
-    statement = scope_to_litellm_user(
+    statement = scope_to_litellm_owner(
         select(VectorStore).where(VectorStore.id == store_id), VectorStore, key_info
     )
     store = session.exec(statement).first()
@@ -99,13 +104,14 @@ async def upload_file(
     if not data.file.filename:
         raise HTTPException(status_code=400, detail="A filename is required")
 
-    user_id = get_litellm_user_id(litellm_vkey_info)
-    upload = await _s3_handler().upload_file(data.file, f"user/{user_id}")
+    user_id, team_id = get_litellm_owner_ids(litellm_vkey_info)
+    destination = f"team/{team_id}" if team_id else f"user/{user_id}"
+    upload = await _s3_handler().upload_file(data.file, destination)
     created_at = _utc_now()
     with database_instance.session() as session:
         file = File(
             user_id=user_id,
-            team_id=None,
+            team_id=team_id,
             filename=data.file.filename,
             size=upload["bytes"],
             purpose=data.purpose,
@@ -129,7 +135,7 @@ async def upload_file(
 @router.get("/v1/files/{file_id}", response_model=UploadFileResponse)
 async def retrieve_file(file_id: UUID, litellm_vkey_info=Depends(get_litellm_vkey_info)):
     with database_instance.session() as session:
-        statement = scope_to_litellm_user(
+        statement = scope_to_litellm_owner(
             select(File).where(File.id == file_id), File, litellm_vkey_info
         )
         file = session.exec(statement).first()
@@ -141,7 +147,7 @@ async def retrieve_file(file_id: UUID, litellm_vkey_info=Depends(get_litellm_vke
 @router.delete("/v1/files/{file_id}", response_model=DeleteFileResponse)
 async def delete_file(file_id: UUID, litellm_vkey_info=Depends(get_litellm_vkey_info)):
     with database_instance.session() as session:
-        statement = scope_to_litellm_user(
+        statement = scope_to_litellm_owner(
             select(File).where(File.id == file_id), File, litellm_vkey_info
         )
         file = session.exec(statement).first()
@@ -180,11 +186,14 @@ def create_vector_store_file(
             # Lock the store row so two concurrent requests cannot create the same
             # attachment before either transaction commits.
             session.exec(select(VectorStore).where(VectorStore.id == store.id).with_for_update()).first()
-            statement = scope_to_litellm_user(
+            statement = scope_to_litellm_owner(
                 select(File).where(File.id == file_id), File, litellm_vkey_info
             )
             file = session.exec(statement).first()
-            if file is None or file.user_id != store.user_id:
+            if file is None or (
+                file.team_id != store.team_id
+                or (store.team_id is None and file.user_id != store.user_id)
+            ):
                 raise HTTPException(status_code=404, detail="File not found")
             existing = session.exec(
                 select(VectorStoreFile).where(
@@ -202,7 +211,7 @@ def create_vector_store_file(
             )
             attachment = VectorStoreFile(
                 file_id=file_id,
-                user_id=store.user_id,
+                user_id=file.user_id,
                 team_id=store.team_id,
                 vector_store_id=store.id,
                 attributes=request.attributes,

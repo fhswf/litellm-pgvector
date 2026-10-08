@@ -175,10 +175,17 @@ async def register_vector_store(
     owner_info: dict[str, Any],
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Register a private vector store and allow only its owner's key."""
+    """Register under the team's key, or use the private-user fallback."""
     if not settings.vector_store_api_base:
         raise LiteLLMRegistryError("VECTOR_STORE_API_BASE is not configured")
     await _get_private_registry_team_id(owner_info)
+
+    team_scoped = bool(owner_info.get("team_id"))
+    user_scoped = not team_scoped and settings.litellm_user_scoped_vector_stores
+    registration_headers = (
+        {"Authorization": f"Bearer {owner_key}"}
+        if team_scoped or user_scoped else _registry_headers()
+    )
 
     provider = settings.vector_store_provider
     api_base = settings.vector_store_api_base.rstrip("/")
@@ -203,7 +210,7 @@ async def register_vector_store(
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
                 f"{_litellm_base_url()}/vector_store/new",
-                headers=_registry_headers(),
+                headers=registration_headers,
                 json=request_body,
             )
         if response.status_code not in (200, 201):
@@ -211,11 +218,12 @@ async def register_vector_store(
                 f"LiteLLM vector-store registration returned HTTP {response.status_code}"
             )
         registered = True
-        await _grant_store_to_owner_key(
-            owner_key=owner_key,
-            owner_info=owner_info,
-            vector_store_id=vector_store_id,
-        )
+        if not team_scoped and not user_scoped:
+            await _grant_store_to_owner_key(
+                owner_key=owner_key,
+                owner_info=owner_info,
+                vector_store_id=vector_store_id,
+            )
     except httpx.HTTPError as exc:
         error = LiteLLMRegistryError("Could not contact LiteLLM vector-store API")
         if registered:
@@ -238,7 +246,7 @@ async def delete_registered_vector_store(vector_store_id: str) -> None:
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(
                 f"{_litellm_base_url()}/vector_store/delete",
-                headers=_registry_headers(),
+                headers=_admin_headers(),
                 json={"vector_store_id": vector_store_id},
             )
     except httpx.HTTPError as exc:
