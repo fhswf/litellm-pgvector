@@ -153,6 +153,7 @@ async def _process_job(job_id: UUID) -> None:
         try:
             chunks = await asyncio.to_thread(_parse_file, s3_key, strategy)
         except Exception as exc:
+            logger.exception("Document parsing failed for %s", job_id)
             raise IngestionFailure("invalid_file", "Could not parse the uploaded file") from exc
         if not chunks:
             raise IngestionFailure("invalid_file", "The uploaded file contains no text")

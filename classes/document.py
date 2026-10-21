@@ -1,4 +1,9 @@
+from pathlib import Path
+
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
 from docling.document_converter import DocumentConverter
+from docling.document_converter import PdfFormatOption
 from docling_core.types.doc.document import DoclingDocument
 from transformers import AutoTokenizer
 
@@ -7,7 +12,23 @@ class Document():
     _document: DoclingDocument
 
     def __init__(self, filepath: str):
-        converter = DocumentConverter()
+        # RapidOCR otherwise writes model weights into its installed package
+        # directory, which is read-only in the Kubernetes deployment.
+        rapidocr_model_dir = Path.home() / ".cache" / "rapidocr" / "models"
+        rapidocr_model_dir.mkdir(parents=True, exist_ok=True)
+        pdf_options = PdfPipelineOptions(
+            ocr_options=RapidOcrOptions(
+                backend="torch",
+                rapidocr_params={
+                    "Global.model_root_dir": str(rapidocr_model_dir),
+                },
+            )
+        )
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
+            }
+        )
         result = converter.convert(filepath)
         self._document = result.document
 
