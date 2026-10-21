@@ -18,12 +18,30 @@ jobs:
     if: ${{ github.event.workflow_run.event == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Download integration test summary
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: integration-test-summary
+          path: integration-test-summary
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
       - name: Update PR with CI results
         uses: actions/github-script@v9
         with:
           script: |
+            const fs = require('fs');
             const run = context.payload.workflow_run;
             const {owner, repo} = context.repo;
+            let testSummary = '⚠️ Test summary artifact is unavailable.';
+            try {
+              testSummary = fs.readFileSync(
+                'integration-test-summary/integration-tests-summary.md', 'utf8'
+              ).trim();
+            } catch (error) {
+              core.warning(`Could not read integration test summary: ${error.message}`);
+            }
             let numbers = (run.pull_requests || []).map(pr => pr.number);
 
             // GitHub can omit pull_requests for runs from forks.
@@ -64,6 +82,8 @@ jobs:
               '| --- | --- |',
               row('integration-tests', 'Integration tests'),
               row('build', 'Image build'),
+              '',
+              testSummary,
               '',
               `Overall: ${format(run.conclusion)} · Commit: \`${run.head_sha.slice(0, 7)}\` · [Actions run](${run.html_url})`
             ].join('\n');

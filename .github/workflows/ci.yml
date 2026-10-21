@@ -52,12 +52,26 @@ jobs:
       - name: Report integration test output
         if: ${{ always() }}
         run: |
-          echo '## Integration tests' >> "$GITHUB_STEP_SUMMARY"
           if test -s "$RUNNER_TEMP/integration-tests.log"; then
-            sed 's/^/    /' "$RUNNER_TEMP/integration-tests.log" >> "$GITHUB_STEP_SUMMARY"
+            python .github/scripts/summarize_unittest.py \
+              "$RUNNER_TEMP/integration-tests.log" \
+              "$RUNNER_TEMP/integration-tests-summary.md"
           else
-            echo 'The integration tests did not produce output.' >> "$GITHUB_STEP_SUMMARY"
+            cat > "$RUNNER_TEMP/integration-tests-summary.md" <<'EOF'
+          ### Integration tests
+
+          ⚠️ Test output was unavailable. See the test job logs for details.
+          EOF
           fi
+          cat "$RUNNER_TEMP/integration-tests-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload integration test summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-summary
+          path: ${{ runner.temp }}/integration-tests-summary.md
+          if-no-files-found: warn
 
   build:
     needs: integration-tests
