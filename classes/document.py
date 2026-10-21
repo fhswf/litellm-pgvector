@@ -20,7 +20,7 @@ class Document():
             ocr_options=RapidOcrOptions(
                 backend="torch",
                 rapidocr_params={
-                    "Global.model_root_dir": str(rapidocr_model_dir),
+                    "Global.model_root_dir": rapidocr_model_dir,
                 },
             )
         )
