@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/fhswf/litellm-pgvector/compare/v1.3.0...v1.4.0) (2026-10-21)
+
+
+### Features
+
+* add script to summarize unittest output and update CI workflow to include test summary ([19c3c43](https://github.com/fhswf/litellm-pgvector/commit/19c3c430f3d6dc902a9c801b0843989eb4f9c5e1))
+
+
+### Bug Fixes
+
+* correct type conversion for rapidocr model directory path ([d068cc0](https://github.com/fhswf/litellm-pgvector/commit/d068cc0ced9500bc7168c519faa56984ec382668))
+
 ## [1.3.0](https://github.com/fhswf/litellm-pgvector/compare/v1.2.0...v1.3.0) (2026-10-21)
 
 
