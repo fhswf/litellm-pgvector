@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.0](https://github.com/fhswf/litellm-pgvector/compare/v1.2.0...v1.3.0) (2026-10-21)
+
+
+### Features
+
+* add support for OpenAI vector store provider and update related configurations ([8bc4bcd](https://github.com/fhswf/litellm-pgvector/commit/8bc4bcd0a29172cf85626ccc4040ebce65382b8b))
+* enhance database interaction with lock handling and async support ([09b6668](https://github.com/fhswf/litellm-pgvector/commit/09b666807b29b67ff997a52aaba408d3be9af1b9))
+* enhance document processing with PDF options and error logging in ingestion ([47477e0](https://github.com/fhswf/litellm-pgvector/commit/47477e040d5081521896c2a5f09ea5649d7e774a))
+* implement user and team ownership for vector stores and files, enabling scoped access ([400db1a](https://github.com/fhswf/litellm-pgvector/commit/400db1a2e6e7ba4627edf291a4d02393b4c49ed4))
+
 ## [1.2.0](https://github.com/fhswf/litellm-pgvector/compare/v1.1.0...v1.2.0) (2026-10-04)
 
 
