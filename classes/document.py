@@ -47,6 +47,26 @@ class Document():
         )
         result = converter.convert(filepath)
         self._document = result.document
+        self.title = self._extract_title(filepath)
+
+    def _extract_title(self, filepath: str) -> str | None:
+        if Path(filepath).suffix.lower() in {".docx", ".docm"}:
+            try:
+                from docx import Document as WordDocument
+
+                title = WordDocument(filepath).core_properties.title
+                if title and title.strip():
+                    return title.strip()
+            except Exception:
+                # Title is optional metadata and must not affect parsing.
+                pass
+
+        for item in self._document.texts:
+            if getattr(item, "label", None) == "title":
+                title = item.text.strip()
+                if title:
+                    return title
+        return None
 
     def compute_chunks(
         self,

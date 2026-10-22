@@ -1,13 +1,19 @@
 """OpenAI-compatible Files and vector-store file attachment endpoints."""
 
 from datetime import datetime, timedelta, timezone
+import asyncio
+import mimetypes
 from typing import Annotated, Literal
 from uuid import UUID
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from light_s3_client.exceptions import BucketNotFound, S3Error
 from sqlalchemy import text, tuple_
 from sqlalchemy.exc import OperationalError
 from sqlmodel import select
+from starlette.background import BackgroundTask
 
 from classes.database import File, VectorStore, VectorStoreFile, database_instance
 from classes.ingestion import DEFAULT_CHUNKING_STRATEGY, refresh_store_usage
@@ -142,6 +148,58 @@ async def retrieve_file(file_id: UUID, litellm_vkey_info=Depends(get_litellm_vke
         if file is None:
             raise HTTPException(status_code=404, detail="File not found")
         return _file_response(file)
+
+
+@router.get("/v1/files/{file_id}/content")
+async def retrieve_file_content(
+    file_id: UUID,
+    litellm_vkey_info=Depends(get_litellm_vkey_info),
+):
+    with database_instance.session() as session:
+        statement = scope_to_litellm_owner(
+            select(File).where(File.id == file_id), File, litellm_vkey_info
+        )
+        file = session.exec(statement).first()
+        if file is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        storage_key = file.filename_on_disk
+        filename = file.filename
+        size = file.size
+
+    try:
+        s3_response = await asyncio.to_thread(
+            _s3_handler().stream_file, storage_key
+        )
+    except BucketNotFound as exc:
+        raise HTTPException(status_code=404, detail="File content not found") from exc
+    except S3Error as exc:
+        raise HTTPException(status_code=502, detail="Unable to retrieve file content") from exc
+
+    if s3_response is None:
+        raise HTTPException(status_code=502, detail="Unable to retrieve file content")
+
+    encoded_filename = quote(filename, safe="")
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+    def file_chunks():
+        try:
+            yield from s3_response.iter_content(chunk_size=64 * 1024)
+        finally:
+            s3_response.close()
+
+    return StreamingResponse(
+        file_chunks(),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="download"; filename*=UTF-8\'\'{encoded_filename}'
+            ),
+            "Content-Length": str(size),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+        background=BackgroundTask(s3_response.close),
+    )
 
 
 @router.delete("/v1/files/{file_id}", response_model=DeleteFileResponse)

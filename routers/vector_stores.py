@@ -16,7 +16,8 @@ from models import (
     ContentChunk,
     VectorStoreDeleteResponse,
     VectorStoreUpdateRequest,
-    VectorStoreUpdateResponse
+    VectorStoreUpdateResponse,
+    VectorStoreChunkResponse,
 )
 
 from util import (
@@ -33,7 +34,13 @@ from litellm_registry import (
 
 from embedding_service import embedding_service
 
-from classes.database import VectorStore, database_instance, Embedding
+from classes.database import (
+    Embedding,
+    File,
+    VectorStore,
+    VectorStoreFile,
+    database_instance,
+)
 
 router = APIRouter()
 
@@ -251,12 +258,25 @@ async def search_vector_store(
         # Build the raw SQL query for vector similarity search
         limit = min(request.limit or 20, 100)  # Cap at 100 results
 
-        embedding_statement = select(
-            Embedding.id, 
-            Embedding.content, 
-            Embedding.embedding_metadata, 
-            Embedding.embedding.l2_distance(query_embedding).label('distance') # pyright: ignore[reportAttributeAccessIssue]
-            ).where(col(Embedding.vector_store_id) == store_id)
+        embedding_statement = (
+            select(
+                Embedding.id,
+                Embedding.content,
+                Embedding.embedding_metadata,
+                File.id,
+                File.filename,
+                Embedding.embedding.l2_distance(query_embedding).label('distance'),  # pyright: ignore[reportAttributeAccessIssue]
+            )
+            .join(
+                VectorStoreFile,
+                Embedding.vector_store_file_id == VectorStoreFile.id,
+            )
+            .join(
+                File,
+                VectorStoreFile.file_id == File.id,
+            )
+            .where(col(Embedding.vector_store_id) == store_id)
+        )
 
         if request.filters:
             for key, value in request.filters.items():
@@ -271,19 +291,25 @@ async def search_vector_store(
         for embedding_result in embedding_results:
             # Convert distance to similarity score (1 - normalized_distance)
             # Cosine distance ranges from 0 (identical) to 2 (opposite)
-            similarity_score = max(0, 1 - (embedding_result[3] / 2))
+            similarity_score = max(0, 1 - (embedding_result[5] / 2))
 
-            # Extract filename from metadata or use a default
-            metadata = embedding_result[2] or {}
-            if not metadata:
-                filename = "document.txt"
-            else:
-                filename = metadata.get("filename", "document.txt") # pyright: ignore[reportAttributeAccessIssue]
+            # Older embeddings may not have filename metadata yet, so use the
+            # linked uploaded file record as a fallback.
+            metadata = dict(embedding_result[2] or {})
+            filename = (
+                embedding_result[4] or metadata.get("filename") or "document.txt"
+            )
+            metadata["filename"] = filename
 
             content_chunks = [ContentChunk(type="text", text=embedding_result[1])]
 
             result = SearchResult(
-                file_id=embedding_result[0].hex,
+                file_id=embedding_result[3].hex,
+                chunk_id=embedding_result[0].hex,
+                permalink=(
+                    f"/v1/vector_stores/{store_id.hex}/chunks/{embedding_result[0].hex}"
+                ),
+                document_url=f"/v1/files/{embedding_result[3].hex}/content",
                 filename=filename,
                 score=similarity_score,
                 attributes=metadata if (request.return_metadata and metadata) else None, # pyright: ignore[reportArgumentType]
@@ -305,6 +331,57 @@ async def search_vector_store(
 
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
+@router.get(
+    "/v1/vector_stores/{vector_store_id}/chunks/{chunk_id}",
+    response_model=VectorStoreChunkResponse,
+)
+def retrieve_vector_store_chunk(
+    vector_store_id: UUID,
+    chunk_id: UUID,
+    litellm_vkey_info=Depends(get_litellm_vkey_info),
+):
+    """Retrieve a specific indexed chunk by its search result reference."""
+    statement = (
+        select(
+            Embedding.id,
+            Embedding.content,
+            Embedding.embedding_metadata,
+            File.id,
+            File.filename,
+        )
+        .join(VectorStore, Embedding.vector_store_id == VectorStore.id)
+        .join(VectorStoreFile, Embedding.vector_store_file_id == VectorStoreFile.id)
+        .join(File, VectorStoreFile.file_id == File.id)
+        .where(
+            Embedding.id == chunk_id,
+            Embedding.vector_store_id == vector_store_id,
+        )
+    )
+    statement = _scope_to_owner(statement, VectorStore, litellm_vkey_info)
+
+    with database_instance.session() as session:
+        chunk = session.exec(statement).first()
+    if chunk is None:
+        raise HTTPException(status_code=404, detail="Chunk not found")
+
+    metadata = dict(chunk[2] or {})
+    filename = chunk[4] or metadata.get("filename") or "document.txt"
+    file_id = chunk[3]
+    permalink = f"/v1/vector_stores/{vector_store_id.hex}/chunks/{chunk_id.hex}"
+    document_url = f"/v1/files/{file_id.hex}/content"
+    return VectorStoreChunkResponse(
+        id=chunk[0].hex,
+        vector_store_id=vector_store_id.hex,
+        file_id=file_id.hex,
+        filename=filename,
+        title=metadata.get("title"),
+        content=chunk[1],
+        attributes=metadata or None,
+        permalink=permalink,
+        document_url=document_url,
+    )
 
 @router.delete("/vector_stores/{vector_store_id}/", response_model=VectorStoreDeleteResponse)
 async def delete_vector_store(vector_store_id: str, litellm_vkey_info = Depends(get_litellm_vkey_info)):

@@ -253,7 +253,10 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
                 select(self.Embedding).where(self.Embedding.vector_store_id == self.store_id)
             ).all()
             self.assertEqual(len(embeddings_rows), 1)
-            self.assertEqual(embeddings_rows[0].embedding_metadata, {"source": "readme"})
+            self.assertEqual(
+                embeddings_rows[0].embedding_metadata,
+                {"source": "readme", "filename": "README.md"},
+            )
         self.assertTrue(all(not path.exists() for path in self.s3.downloaded_paths))
 
         detached = self.client.delete(

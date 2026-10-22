@@ -41,10 +41,26 @@ class ContentChunk(BaseModel):
 
 class SearchResult(BaseModel):
     file_id: str
+    chunk_id: str
+    permalink: str
+    document_url: str
     filename: str
     score: float
     attributes: Optional[Dict[str, Any]] = None
     content: List[ContentChunk]
+
+
+class VectorStoreChunkResponse(BaseModel):
+    id: str
+    object: str = "vector_store.chunk"
+    vector_store_id: str
+    file_id: str
+    filename: str
+    title: Optional[str] = None
+    content: str
+    attributes: Optional[Dict[str, Any]] = None
+    permalink: str
+    document_url: str
 
 
 class VectorStoreSearchResponse(BaseModel):

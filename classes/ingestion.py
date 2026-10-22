@@ -67,14 +67,14 @@ def _s3_handler() -> S3FileHandler:
     )
 
 
-def _parse_file(s3_key: str, strategy: dict) -> list[str]:
+def _parse_file(s3_key: str, strategy: dict) -> tuple[list[str], str | None]:
     # S3FileHandler uses a synchronous client under its async method. Run it and
     # the CPU-heavy document converter off the API event loop.
     filepath = asyncio.run(_s3_handler().get_file(s3_key))
     try:
         document = Document(filepath)
         options = strategy.get("static") or DEFAULT_CHUNKING_STRATEGY["static"]
-        return document.compute_chunks(**options)
+        return document.compute_chunks(**options), getattr(document, "title", None)
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
@@ -90,7 +90,7 @@ def _pending_jobs() -> list[UUID]:
         ).all())
 
 
-def _job_input(job_id: UUID) -> tuple[str, dict] | None:
+def _job_input(job_id: UUID) -> tuple[str, str, dict, dict] | None:
     with database_instance.session() as session:
         job = session.get(VectorStoreFile, job_id)
         if job is None or job.status != "in_progress":
@@ -98,10 +98,20 @@ def _job_input(job_id: UUID) -> tuple[str, dict] | None:
         file = session.get(File, job.file_id)
         if file is None:
             raise IngestionFailure("invalid_file", "The uploaded file no longer exists")
-        return file.filename_on_disk, job.chunking_strategy_config or DEFAULT_CHUNKING_STRATEGY
+        return (
+            file.filename_on_disk,
+            file.filename,
+            job.chunking_strategy_config or DEFAULT_CHUNKING_STRATEGY,
+            job.attributes or {},
+        )
 
 
-def _finish_job(job_id: UUID, chunks: list[str], vectors: list[list[float]]) -> None:
+def _finish_job(
+    job_id: UUID,
+    chunks: list[str],
+    vectors: list[list[float]],
+    embedding_metadata: dict,
+) -> None:
     if len(chunks) != len(vectors):
         raise IngestionFailure("server_error", "Embedding response did not match the file chunks")
 
@@ -120,7 +130,7 @@ def _finish_job(job_id: UUID, chunks: list[str], vectors: list[list[float]]) -> 
                 vector_store_file_id=job.id,
                 content=chunk,
                 embedding=vector,
-                embedding_metadata=job.attributes or {},
+                embedding_metadata=embedding_metadata,
             ))
         job.status = "completed"
         job.last_error = None
@@ -150,9 +160,11 @@ async def _process_job(job_id: UUID) -> None:
         job_input = await asyncio.to_thread(_job_input, job_id)
         if job_input is None:
             return
-        s3_key, strategy = job_input
+        s3_key, filename, strategy, attributes = job_input
         try:
-            chunks = await asyncio.to_thread(_parse_file, s3_key, strategy)
+            chunks, document_title = await asyncio.to_thread(
+                _parse_file, s3_key, strategy
+            )
         except OSError as exc:
             logger.exception("Document parsing failed for %s", job_id)
             if exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOSPC):
@@ -177,7 +189,13 @@ async def _process_job(job_id: UUID) -> None:
             raise IngestionFailure("server_error", "Embedding service key is not configured")
         for start in range(0, len(chunks), 32):
             vectors.extend(await embedding_service.generate_embeddings(chunks[start:start + 32], embedding_key))
-        await asyncio.to_thread(_finish_job, job_id, chunks, vectors)
+        embedding_metadata = dict(attributes)
+        embedding_metadata["filename"] = filename
+        if document_title:
+            embedding_metadata["title"] = document_title
+        await asyncio.to_thread(
+            _finish_job, job_id, chunks, vectors, embedding_metadata
+        )
     except asyncio.CancelledError:
         raise
     except IngestionFailure as exc:

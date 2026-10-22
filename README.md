@@ -57,6 +57,10 @@ The upload stores the original file and returns its ID. Attach that ID to a vect
 
 Upload, attachment, and poll requests can return HTTP 200 while ingestion is pending or has failed: these endpoints report whether the request succeeded, while the attachment object's `status` and `last_error` report the background ingestion result. A later ingestion failure cannot change the HTTP status of the earlier upload or attachment request.
 
+Ingested chunk metadata preserves the uploaded filename as `filename`. When available, the document title is included as `title`; attachment attributes are preserved alongside these fields.
+
+Search results include the original uploaded `file_id`, an exact `chunk_id`, a `permalink` for retrieving that chunk, and a `document_url` for downloading the original file. Both URLs are relative to this API and require the usual bearer token. See [docs/search-result-permalinks.md](docs/search-result-permalinks.md) for route behavior and lifecycle details.
+
 ```bash
 curl -sS --fail-with-body https://pgvector.fh-swf.cloud/v1/files \
   -H "Authorization: Bearer $LITELLM_USER_KEY" \

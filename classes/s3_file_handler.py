@@ -64,6 +64,19 @@ class S3FileHandler(AbstractFileHandler):
         return self._s3_client.download_file(self._s3_bucket, file, tmp_filepath_on_disk)
 
     @classmethod
+    def stream_file(cls, file: str):
+        """Open a streaming S3 response for an uploaded file."""
+        s3_url, _ = cls._s3_client.build_vars(file, cls._s3_bucket)
+        headers = {"User-Agent": "litellm-pgvector"}
+        headers.update(cls._s3_client.create_aws_signature("GET", s3_url, headers))
+        return cls._s3_client.do_request(
+            url=s3_url,
+            headers=headers,
+            stream=True,
+            method="GET",
+        )
+
+    @classmethod
     async def delete_file(self, file: str) -> bool:
         exists = self._s3_client.get_object(self._s3_bucket, file)
         if not exists:
