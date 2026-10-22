@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/fhswf/litellm-pgvector/compare/v1.5.0...v1.6.0) (2026-10-22)
+
+
+### Features
+
+* update chunking strategy to semantic and enhance related configurations ([02ea89e](https://github.com/fhswf/litellm-pgvector/commit/02ea89e8c0782da358fd11aca850951b91e14d77))
+
 ## [1.5.0](https://github.com/fhswf/litellm-pgvector/compare/v1.4.0...v1.5.0) (2026-10-22)
 
 
