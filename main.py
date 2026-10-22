@@ -1,3 +1,9 @@
+from logging_config import configure_logging
+
+# Configure before importing the application stack so import-time Python
+# warnings also use the application formatter.
+configure_logging()
+
 import time
 import asyncio
 from contextlib import asynccontextmanager
@@ -9,6 +15,11 @@ from typing import Annotated
 from config import settings
 from routers import files, vector_stores
 from classes.ingestion import run_ingestion_worker
+
+# Some dependencies (notably Transformers and PyTorch) install their own
+# handlers while importing. Remove those and route their runtime logs through
+# the shared root handler too.
+configure_logging()
 
 load_dotenv()
 
@@ -52,4 +63,10 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=settings.host, port=settings.port, reload=True)
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=True,
+        log_config=None,
+    )
