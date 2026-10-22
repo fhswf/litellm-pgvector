@@ -203,13 +203,9 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
         file_id = self.upload()
         attached = self.attach(file_id)
 
-        self.assertEqual(
-            attached["chunking_strategy"],
-            {
-                "type": "semantic",
-                "semantic": {"max_chunk_size_tokens": 800},
-            },
-        )
+        expected_strategy = self.ingestion.DEFAULT_CHUNKING_STRATEGY
+        self.assertEqual(expected_strategy["type"], "semantic")
+        self.assertEqual(attached["chunking_strategy"], expected_strategy)
 
     def test_upload_ingest_detach_and_delete(self):
         first_id = self.upload()
