@@ -55,6 +55,8 @@ A FastAPI application that provides OpenAI-compatible vector store endpoints usi
 
 The upload stores the original file and returns its ID. Attach that ID to a vector store to start parsing and embedding. Attachment returns `status: "in_progress"` immediately; poll the attachment until it reaches `completed` or `failed`.
 
+Upload, attachment, and poll requests can return HTTP 200 while ingestion is pending or has failed: these endpoints report whether the request succeeded, while the attachment object's `status` and `last_error` report the background ingestion result. A later ingestion failure cannot change the HTTP status of the earlier upload or attachment request.
+
 ```bash
 curl -sS --fail-with-body https://pgvector.fh-swf.cloud/v1/files \
   -H "Authorization: Bearer $LITELLM_USER_KEY" \

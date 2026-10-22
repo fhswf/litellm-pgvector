@@ -5,8 +5,8 @@ description = "OpenAI-compatible vector store API using PGVector and LiteLLM"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "docling==2.113.0",
-    "docling-core==2.87.1",
+    "docling==2.141.0",
+    "docling-core==2.103.1",
     "fastapi==0.139.2",
     "httpx==0.28.1",
     "light-s3-client==0.0.40",

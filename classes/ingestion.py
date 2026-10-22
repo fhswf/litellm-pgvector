@@ -1,6 +1,7 @@
 """Durable, single-job-at-a-time vector store file ingestion."""
 
 import asyncio
+import errno
 import logging
 import os
 from datetime import datetime, timezone
@@ -152,6 +153,16 @@ async def _process_job(job_id: UUID) -> None:
         s3_key, strategy = job_input
         try:
             chunks = await asyncio.to_thread(_parse_file, s3_key, strategy)
+        except OSError as exc:
+            logger.exception("Document parsing failed for %s", job_id)
+            if exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOSPC):
+                raise IngestionFailure(
+                    "server_error",
+                    "Document processing failed due to a server filesystem error",
+                ) from exc
+            raise IngestionFailure(
+                "invalid_file", "Could not parse the uploaded file"
+            ) from exc
         except Exception as exc:
             logger.exception("Document parsing failed for %s", job_id)
             raise IngestionFailure("invalid_file", "Could not parse the uploaded file") from exc
