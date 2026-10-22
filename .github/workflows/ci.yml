@@ -40,7 +40,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync --locked --no-dev --python 3.11
+        run: uv sync --locked --python 3.11
 
       - name: Run file lifecycle integration tests
         env:
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload integration test summary
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-test-summary
           path: ${{ runner.temp }}/integration-tests-summary.md

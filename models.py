@@ -106,14 +106,38 @@ class VectorStoreListResponse(BaseModel):
 
 
 class StaticFileChunkingStrategy(BaseModel):
-    chunk_overlap_tokens: int = Field(ge=0)
-    max_chunk_size_tokens: int = Field(ge=100, le=4096)
+    chunk_overlap_tokens: int = Field(
+        ge=0,
+        description=(
+            "Accepted for API compatibility; Docling semantic chunking does not "
+            "apply fixed token overlap."
+        ),
+    )
+    max_chunk_size_tokens: int = Field(
+        ge=100,
+        le=4096,
+        description=(
+            "Target maximum chunk size. Semantic Markdown elements remain intact "
+            "and may exceed this limit."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_overlap(self):
         if self.chunk_overlap_tokens > self.max_chunk_size_tokens // 2:
             raise ValueError("chunk_overlap_tokens must not exceed half of max_chunk_size_tokens")
         return self
+
+
+class SemanticFileChunkingStrategy(BaseModel):
+    max_chunk_size_tokens: int = Field(
+        ge=100,
+        le=4096,
+        description=(
+            "Target maximum size for Docling semantic chunks. Markdown elements "
+            "remain intact and may exceed this limit."
+        ),
+    )
 
 
 class AutoFileChunkingStrategyParam(BaseModel):
@@ -125,12 +149,19 @@ class StaticFileChunkingStrategyObjectParam(BaseModel):
     static: StaticFileChunkingStrategy
 
 
+class SemanticFileChunkingStrategyObjectParam(BaseModel):
+    type: Literal["semantic"]
+    semantic: SemanticFileChunkingStrategy
+
+
 class OtherFileChunkingStrategyObject(BaseModel):
     type: Literal["other"] = "other"
 
 
 FileChunkingStrategyParam: TypeAlias = Union[
-    AutoFileChunkingStrategyParam, StaticFileChunkingStrategyObjectParam
+    AutoFileChunkingStrategyParam,
+    StaticFileChunkingStrategyObjectParam,
+    SemanticFileChunkingStrategyObjectParam,
 ]
 
 
@@ -170,7 +201,13 @@ class VectorStoreFileResponse(BaseModel):
     usage_bytes: int
     vector_store_id: str
     attributes: Optional[Dict[str, Any]] = None
-    chunking_strategy: Optional[Union[StaticFileChunkingStrategyObjectParam, OtherFileChunkingStrategyObject]] = None
+    chunking_strategy: Optional[
+        Union[
+            StaticFileChunkingStrategyObjectParam,
+            SemanticFileChunkingStrategyObjectParam,
+            OtherFileChunkingStrategyObject,
+        ]
+    ] = None
 
 
 class VectorStoreFileListResponse(BaseModel):

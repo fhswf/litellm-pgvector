@@ -199,6 +199,18 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
 
         asyncio.run(wait_for_job())
 
+    def test_default_chunking_strategy_is_semantic(self):
+        file_id = self.upload()
+        attached = self.attach(file_id)
+
+        self.assertEqual(
+            attached["chunking_strategy"],
+            {
+                "type": "semantic",
+                "semantic": {"max_chunk_size_tokens": 800},
+            },
+        )
+
     def test_upload_ingest_detach_and_delete(self):
         first_id = self.upload()
         second_id = self.upload(path="/files")
@@ -214,7 +226,13 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
             attributes={"source": "readme"},
             chunking_strategy=strategy,
         )
-        self.assertEqual(attached["chunking_strategy"], strategy)
+        self.assertEqual(
+            attached["chunking_strategy"],
+            {
+                "type": "semantic",
+                "semantic": {"max_chunk_size_tokens": 100},
+            },
+        )
         self.assertEqual(self.attachment(first_id).json()["status"], "in_progress")
         self.assertEqual(
             self.client.get(f"/v1/vector_stores/{self.store_id.hex}").json()["status"],
@@ -242,7 +260,7 @@ class FileLifecycleIntegrationTests(unittest.TestCase):
         self.assertEqual(result["attributes"], {"source": "readme"})
         self.assertEqual(
             TextDocument.chunking_options,
-            [{"max_chunk_size_tokens": 100, "chunk_overlap_tokens": 50}],
+            [{"max_chunk_size_tokens": 100}],
         )
         with self.db.session() as session:
             store = session.get(self.VectorStore, self.store_id)

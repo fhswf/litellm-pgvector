@@ -20,8 +20,8 @@ from classes.s3_file_handler import S3FileHandler
 
 logger = logging.getLogger(__name__)
 DEFAULT_CHUNKING_STRATEGY = {
-    "type": "static",
-    "static": {"max_chunk_size_tokens": 800, "chunk_overlap_tokens": 400},
+    "type": "semantic",
+    "semantic": {"max_chunk_size_tokens": 1600},
 }
 
 
@@ -73,7 +73,11 @@ def _parse_file(s3_key: str, strategy: dict) -> tuple[list[str], str | None]:
     filepath = asyncio.run(_s3_handler().get_file(s3_key))
     try:
         document = Document(filepath)
-        options = strategy.get("static") or DEFAULT_CHUNKING_STRATEGY["static"]
+        options = (
+            strategy.get("semantic")
+            or strategy.get("static")  # Support jobs queued with the old strategy.
+            or DEFAULT_CHUNKING_STRATEGY["semantic"]
+        )
         return document.compute_chunks(**options), getattr(document, "title", None)
     finally:
         if os.path.exists(filepath):

@@ -263,17 +263,31 @@ def create_vector_store_file(
                 raise HTTPException(status_code=400, detail="File is already attached to this vector store")
 
             strategy = request.chunking_strategy
-            effective_strategy = (
-                strategy.model_dump() if strategy and strategy.type == "static"
-                else DEFAULT_CHUNKING_STRATEGY.copy()
-            )
+            if strategy and strategy.type == "static":
+                # Keep accepting the OpenAI static request shape, but report and
+                # store the semantic chunker that actually processes the file.
+                effective_strategy = {
+                    "type": "semantic",
+                    "semantic": {
+                        "max_chunk_size_tokens": (
+                            strategy.static.max_chunk_size_tokens
+                        ),
+                    },
+                }
+            elif strategy and strategy.type == "semantic":
+                effective_strategy = strategy.model_dump()
+            else:
+                effective_strategy = {
+                    **DEFAULT_CHUNKING_STRATEGY,
+                    "semantic": dict(DEFAULT_CHUNKING_STRATEGY["semantic"]),
+                }
             attachment = VectorStoreFile(
                 file_id=file_id,
                 user_id=file.user_id,
                 team_id=store.team_id,
                 vector_store_id=store.id,
                 attributes=request.attributes,
-                chunking_strategy="static",
+                chunking_strategy=effective_strategy["type"],
                 chunking_strategy_config=effective_strategy,
                 usage_bytes=0,
                 status="in_progress",

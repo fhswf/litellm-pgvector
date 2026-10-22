@@ -1,12 +1,49 @@
 from pathlib import Path
 
+from docling.chunking import HybridChunker
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
 from docling.document_converter import DocumentConverter
 from docling.document_converter import PdfFormatOption
 from docling.models.stages.ocr.rapid_ocr_model import RapidOcrModel
-from docling_core.types.doc.document import DoclingDocument
-from transformers import AutoTokenizer
+from docling_core.transforms.chunker.doc_chunk import DocChunk
+from docling_core.transforms.chunker.hierarchical_chunker import (
+    ChunkingDocSerializer,
+    ChunkingSerializerProvider,
+)
+from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+from docling_core.transforms.serializer.base import BaseDocSerializer
+from docling_core.transforms.serializer.markdown import MarkdownTableSerializer
+from docling_core.types.doc.document import (
+    DoclingDocument,
+    SectionHeaderItem,
+    TitleItem,
+)
+
+
+class _MarkdownChunkingDocSerializer(ChunkingDocSerializer):
+    # Keep table data as Markdown; Docling's default chunking serializer turns
+    # tables into triplets, which is useful for retrieval but loses the source
+    # Markdown table structure.
+    table_serializer: MarkdownTableSerializer = MarkdownTableSerializer()
+
+
+class _MarkdownChunkingSerializerProvider(ChunkingSerializerProvider):
+    def get_serializer(self, doc: DoclingDocument) -> _MarkdownChunkingDocSerializer:
+        return _MarkdownChunkingDocSerializer(doc=doc)
+
+
+class _MarkdownHybridChunker(HybridChunker):
+    def _split_using_plain_text(
+        self,
+        doc_chunk: DocChunk,
+        doc_serializer: BaseDocSerializer,
+    ) -> list[DocChunk]:
+        # Docling has already identified semantic item boundaries. Splitting
+        # serialized text can cut through Markdown links, emphasis, tables, or
+        # code blocks, so keep each item intact even when it exceeds the target.
+        return [doc_chunk]
+
 
 class Document():
     _chunks: list = []
@@ -15,8 +52,8 @@ class Document():
     def __init__(self, filepath: str):
         # RapidOCR otherwise writes model weights into its installed package
         # directory, which is read-only in the Kubernetes deployment.
-        artifacts_path = Path.home() / ".cache" / "docling"
-        rapidocr_model_dir = artifacts_path / "RapidOcr"
+        model_cache_dir = Path.home() / ".cache" / "docling"
+        rapidocr_model_dir = model_cache_dir / "RapidOcr"
         is_pdf = Path(filepath).suffix.lower() == ".pdf"
         if not is_pdf:
             with open(filepath, "rb") as source:
@@ -31,8 +68,11 @@ class Document():
                 local_dir=rapidocr_model_dir,
                 lang="chinese",
             )
+        # Leave PdfPipelineOptions.artifacts_path unset. Setting it makes
+        # Docling treat the directory as a complete, offline model bundle. The
+        # cache here only contains RapidOCR, so layout and table models would
+        # fail to initialize instead of being downloaded to Docling's cache.
         pdf_options = PdfPipelineOptions(
-            artifacts_path=artifacts_path,
             ocr_options=RapidOcrOptions(
                 backend="torch",
                 rapidocr_params={
@@ -71,43 +111,50 @@ class Document():
     def compute_chunks(
         self,
         max_chunk_size_tokens: int = 800,
-        chunk_overlap_tokens: int = 400,
+        chunk_overlap_tokens: int = 0,
     ) -> list[str]:
-        tokenizer = AutoTokenizer.from_pretrained(
-            "sentence-transformers/all-MiniLM-L6-v2", use_fast=True
+        # Retain the overlap argument for callers using the existing strategy
+        # shape. Docling's semantic chunker has no fixed-overlap setting.
+        _ = chunk_overlap_tokens
+        tokenizer = HuggingFaceTokenizer.from_pretrained(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            max_tokens=max_chunk_size_tokens,
         )
-        markdown = self._document.export_to_markdown()
-        encoded = tokenizer(
-            markdown,
-            add_special_tokens=False,
-            return_offsets_mapping=True,
-            truncation=False,
+        chunker = _MarkdownHybridChunker(
+            tokenizer=tokenizer,
+            serializer_provider=_MarkdownChunkingSerializerProvider(),
+            delim="\n\n",
         )
-        tokens = encoded["input_ids"]
-        offsets = encoded["offset_mapping"]
-        token_text = tokenizer.convert_ids_to_tokens(tokens)
-        step = max_chunk_size_tokens - chunk_overlap_tokens
+        heading_paths = self._heading_paths_by_item_ref()
         chunks = []
-        for start in range(0, len(tokens), step):
-            end = min(start + max_chunk_size_tokens, len(tokens))
-
-            # Use tokenizer offsets to slice the original Markdown. Decoding
-            # WordPiece tokens inserts spaces around punctuation such as '*',
-            # '_', '&', and '-', which changes Markdown and document text.
-            # If a boundary falls inside a WordPiece word, include its adjacent
-            # pieces so a chunk does not start or end in the middle of a word.
-            span_start = start
-            while span_start > 0 and token_text[span_start].startswith("##"):
-                span_start -= 1
-            span_end = end
-            while span_end < len(tokens) and token_text[span_end].startswith("##"):
-                span_end += 1
-
-            char_start = offsets[span_start][0]
-            char_end = offsets[span_end - 1][1]
-            chunk = markdown[char_start:char_end].strip()
-            if chunk:
-                chunks.append(chunk)
-            if end >= len(tokens):
-                break
+        for chunk in chunker.chunk(self._document):
+            heading_path: list[tuple[str, int]] = []
+            if chunk.meta.doc_items:
+                heading_path = heading_paths.get(
+                    chunk.meta.doc_items[0].self_ref, []
+                )
+            heading_markdown = "\n\n".join(
+                f"{'#' * level} {text}" for text, level in heading_path
+            )
+            text = "\n\n".join(
+                part for part in (heading_markdown, chunk.text.strip()) if part
+            )
+            if text:
+                chunks.append(text)
         return chunks
+
+    def _heading_paths_by_item_ref(self) -> dict[str, list[tuple[str, int]]]:
+        active_headings: dict[int, tuple[str, int]] = {}
+        heading_paths: dict[str, list[tuple[str, int]]] = {}
+        for item, _ in self._document.iterate_items(with_groups=True):
+            if isinstance(item, TitleItem | SectionHeaderItem):
+                level = item.level if isinstance(item, SectionHeaderItem) else 0
+                for previous_level in list(active_headings):
+                    if previous_level >= level:
+                        del active_headings[previous_level]
+                active_headings[level] = (item.text, max(level, 1))
+            elif self_ref := getattr(item, "self_ref", None):
+                heading_paths[self_ref] = [
+                    active_headings[level] for level in sorted(active_headings)
+                ]
+        return heading_paths
