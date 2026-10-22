@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/fhswf/litellm-pgvector/compare/v1.6.0...v1.6.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* update RapidOCR language and dictionary handling in Document class ([7d761dc](https://github.com/fhswf/litellm-pgvector/commit/7d761dc6225a5893bfdaa526b4102dce616943cc))
+
 ## [1.6.0](https://github.com/fhswf/litellm-pgvector/compare/v1.5.0...v1.6.0) (2026-10-22)
 
 
