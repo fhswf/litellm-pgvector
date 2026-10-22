@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.0](https://github.com/fhswf/litellm-pgvector/compare/v1.4.0...v1.5.0) (2026-10-22)
+
+
+### Features
+
+* enhance file handling and metadata retrieval in ingestion and search processes ([992be23](https://github.com/fhswf/litellm-pgvector/commit/992be235e6e0657fc5d83d736b118107ed650450))
+* improve chunking logic in compute_chunks method for better Markdown handling ([ba9f7e5](https://github.com/fhswf/litellm-pgvector/commit/ba9f7e5bacd06fb372af568096c9cd797761417a))
+
+
+### Bug Fixes
+
+* **ingestion:** Update dependencies in pyproject.toml and uv.lock ([f7255fc](https://github.com/fhswf/litellm-pgvector/commit/f7255fc75286d6fc8b02536610db06f64ec5308e))
+
 ## [1.4.0](https://github.com/fhswf/litellm-pgvector/compare/v1.3.0...v1.4.0) (2026-10-21)
 
 
