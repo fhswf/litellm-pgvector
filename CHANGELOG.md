@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.2](https://github.com/fhswf/litellm-pgvector/compare/v1.6.1...v1.6.2) (2026-10-22)
+
+
+### Bug Fixes
+
+* **logging:** add application-wide logging configuration ([fecf748](https://github.com/fhswf/litellm-pgvector/commit/fecf748d659cae5434830a7c623aced2ce4bcd65))
+
 ## [1.6.1](https://github.com/fhswf/litellm-pgvector/compare/v1.6.0...v1.6.1) (2026-10-22)
 
 
