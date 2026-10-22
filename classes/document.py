@@ -73,16 +73,41 @@ class Document():
         max_chunk_size_tokens: int = 800,
         chunk_overlap_tokens: int = 400,
     ) -> list[str]:
-        tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-        tokens = tokenizer.encode(self._document.export_to_markdown(), add_special_tokens=False)
+        tokenizer = AutoTokenizer.from_pretrained(
+            "sentence-transformers/all-MiniLM-L6-v2", use_fast=True
+        )
+        markdown = self._document.export_to_markdown()
+        encoded = tokenizer(
+            markdown,
+            add_special_tokens=False,
+            return_offsets_mapping=True,
+            truncation=False,
+        )
+        tokens = encoded["input_ids"]
+        offsets = encoded["offset_mapping"]
+        token_text = tokenizer.convert_ids_to_tokens(tokens)
         step = max_chunk_size_tokens - chunk_overlap_tokens
         chunks = []
         for start in range(0, len(tokens), step):
-            chunk = tokenizer.decode(
-                tokens[start : start + max_chunk_size_tokens], skip_special_tokens=True
-            ).strip()
+            end = min(start + max_chunk_size_tokens, len(tokens))
+
+            # Use tokenizer offsets to slice the original Markdown. Decoding
+            # WordPiece tokens inserts spaces around punctuation such as '*',
+            # '_', '&', and '-', which changes Markdown and document text.
+            # If a boundary falls inside a WordPiece word, include its adjacent
+            # pieces so a chunk does not start or end in the middle of a word.
+            span_start = start
+            while span_start > 0 and token_text[span_start].startswith("##"):
+                span_start -= 1
+            span_end = end
+            while span_end < len(tokens) and token_text[span_end].startswith("##"):
+                span_end += 1
+
+            char_start = offsets[span_start][0]
+            char_end = offsets[span_end - 1][1]
+            chunk = markdown[char_start:char_end].strip()
             if chunk:
                 chunks.append(chunk)
-            if start + max_chunk_size_tokens >= len(tokens):
+            if end >= len(tokens):
                 break
         return chunks
