@@ -60,14 +60,14 @@ class Document():
                 is_pdf = b"%PDF-" in source.read(1024)
         if is_pdf:
             rapidocr_model_dir.mkdir(parents=True, exist_ok=True)
-            # Docling's artifacts directory also controls the recognition-key
-            # dictionary path. RapidOCR otherwise downloads that file to its
-            # package's models directory, even when model_root_dir is configured.
             RapidOcrModel.download_models(
                 backend="torch",
                 local_dir=rapidocr_model_dir,
-                lang="chinese",
+                lang="ch",
             )
+        # RapidOCR does not use Global.model_root_dir for its character
+        # dictionary; without this path it falls back to site-packages/models.
+        rapidocr_dict_path = rapidocr_model_dir / "ppocrv6_dict.txt"
         # Leave PdfPipelineOptions.artifacts_path unset. Setting it makes
         # Docling treat the directory as a complete, offline model bundle. The
         # cache here only contains RapidOCR, so layout and table models would
@@ -75,6 +75,8 @@ class Document():
         pdf_options = PdfPipelineOptions(
             ocr_options=RapidOcrOptions(
                 backend="torch",
+                lang=["ch"],
+                rec_keys_path=str(rapidocr_dict_path),
                 rapidocr_params={
                     "Global.model_root_dir": rapidocr_model_dir,
                 },

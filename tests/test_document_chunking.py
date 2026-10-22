@@ -1,6 +1,8 @@
 """Unit tests for document model caching and semantic Markdown chunking."""
 
 from pathlib import Path
+import builtins
+import errno
 import re
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -22,9 +24,34 @@ from docling_core.types.doc.document import (
 from docling_core.types.doc.items.group import GroupItem
 from docling_core.types.doc.items.table.table_data import TableCell, TableData
 from docling_core.types.doc.labels import CodeLanguageLabel, DocItemLabel
+from rapidocr.ch_ppocr_rec import main as rapidocr_rec_module
+from rapidocr.utils.download_file import DownloadFile
+from rapidocr.utils.typings import EngineType, ModelType, OCRVersion, TaskType
 
 from classes import document as document_module
 from classes.document import Document
+
+
+class _RapidOcrConfig(dict):
+    __getattr__ = dict.__getitem__
+
+
+class _DictionaryDownloadResponse:
+    headers = {"content-length": "0"}
+
+    def raise_for_status(self):
+        pass
+
+    def iter_content(self, chunk_size):
+        return iter(())
+
+
+class _RapidOcrSession:
+    def have_key(self):
+        return False
+
+    def get_dict_key_url(self, file_info):
+        return "https://models.example/ppocrv6_dict.txt"
 
 
 class WhitespaceTokenizer(BaseTokenizer):
@@ -61,6 +88,7 @@ class DocumentModelCacheTests(unittest.TestCase):
                     self.assertNotEqual(local_dir, readonly_package_models)
                     local_dir.mkdir(parents=True, exist_ok=True)
                     (local_dir / "downloaded-model.marker").write_text("cached")
+                    (local_dir / "ppocrv6_dict.txt").write_text("dictionary")
 
                 converter = Mock()
                 converter.convert.return_value = SimpleNamespace(
@@ -92,12 +120,83 @@ class DocumentModelCacheTests(unittest.TestCase):
                     ],
                     expected_model_dir,
                 )
+                expected_dict_path = expected_model_dir / "ppocrv6_dict.txt"
+                self.assertEqual(
+                    Path(pdf_options.ocr_options.rec_keys_path), expected_dict_path
+                )
                 self.assertTrue(
                     (expected_model_dir / "downloaded-model.marker").is_file()
                 )
+                self.assertTrue(expected_dict_path.is_file())
+
+                recognizer = rapidocr_rec_module.TextRecognizer.__new__(
+                    rapidocr_rec_module.TextRecognizer
+                )
+                recognizer.session = Mock()
+                recognizer.session.have_key.return_value = False
+                with (
+                    patch.object(
+                        rapidocr_rec_module,
+                        "DEFAULT_MODEL_PATH",
+                        readonly_package_models,
+                    ),
+                    patch.object(DownloadFile, "run") as download_dictionary,
+                ):
+                    _, resolved_dict_path = recognizer.get_character_dict(
+                        {"rec_keys_path": pdf_options.ocr_options.rec_keys_path}
+                    )
+                self.assertEqual(Path(resolved_dict_path), expected_dict_path)
+                download_dictionary.assert_not_called()
                 self.assertEqual(list(readonly_package_models.iterdir()), [])
             finally:
                 readonly_package_models.chmod(0o755)
+
+    def test_reproduces_rapidocr_dictionary_write_to_readonly_package_models(self):
+        with TemporaryDirectory() as temporary_directory:
+            readonly_package_models = (
+                Path(temporary_directory) / "site-packages" / "rapidocr" / "models"
+            )
+            readonly_package_models.mkdir(parents=True)
+            dictionary_path = readonly_package_models / "ppocrv6_dict.txt"
+            recognizer = rapidocr_rec_module.TextRecognizer.__new__(
+                rapidocr_rec_module.TextRecognizer
+            )
+            recognizer.session = _RapidOcrSession()
+            config = _RapidOcrConfig(
+                rec_keys_path=None,
+                engine_type=EngineType.TORCH,
+                ocr_version=OCRVersion.PPOCRV6,
+                task_type=TaskType.REC,
+                lang_type="ch",
+                model_type=ModelType.SMALL,
+            )
+            real_open = builtins.open
+
+            def fail_on_package_dictionary_write(file, mode="r", *args, **kwargs):
+                if Path(file) == dictionary_path and any(
+                    write_mode in mode for write_mode in ("w", "a", "x", "+")
+                ):
+                    raise OSError(errno.EROFS, "Read-only file system", str(file))
+                return real_open(file, mode, *args, **kwargs)
+
+            with (
+                patch.object(
+                    rapidocr_rec_module,
+                    "DEFAULT_MODEL_PATH",
+                    readonly_package_models,
+                ),
+                patch.object(
+                    DownloadFile,
+                    "_make_http_request",
+                    return_value=_DictionaryDownloadResponse(),
+                ),
+                patch("builtins.open", side_effect=fail_on_package_dictionary_write),
+            ):
+                with self.assertRaises(OSError) as raised:
+                    recognizer.get_character_dict(config)
+
+            self.assertEqual(raised.exception.errno, errno.EROFS)
+            self.assertEqual(Path(raised.exception.filename), dictionary_path)
 
 
 class SemanticMarkdownChunkingTests(unittest.TestCase):
