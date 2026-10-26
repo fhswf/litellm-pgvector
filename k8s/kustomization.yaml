@@ -10,4 +10,4 @@ resources:
   - sealed-secret.yaml
 images:
   - name: ghcr.io/fhswf/litellm-pgvector
-    newTag: v1.6.2 # x-release-please-version
+    newTag: v1.7.0 # x-release-please-version

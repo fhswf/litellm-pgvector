@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/fhswf/litellm-pgvector/compare/v1.6.2...v1.7.0) (2026-10-26)
+
+
+### Features
+
+* **logging:** enhance error handling and logging for vector store registration ([c446113](https://github.com/fhswf/litellm-pgvector/commit/c446113a16ea4b18d21fbe2d1d48e9e466a47f4b))
+
 ## [1.6.2](https://github.com/fhswf/litellm-pgvector/compare/v1.6.1...v1.6.2) (2026-10-22)
 
 
