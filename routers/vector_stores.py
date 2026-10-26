@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import datetime, os
 from fastapi import APIRouter, Depends, HTTPException, Form
 from typing import Annotated, Optional
@@ -43,6 +44,7 @@ from classes.database import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _scope_to_owner(statement, model, litellm_vkey_info):
@@ -147,9 +149,10 @@ async def create_vector_store(
         raise
     except Exception as e:
         session.rollback()
+        logger.exception("Failed to create vector store id=%s", store.id.hex)
         raise HTTPException(
-            status_code=500, detail=f"Failed to create vector store: {str(e)}"
-        )
+            status_code=500, detail="Failed to create vector store"
+        ) from e
     finally:
         session.close()
 

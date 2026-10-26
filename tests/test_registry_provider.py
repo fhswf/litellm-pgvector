@@ -8,7 +8,11 @@ import httpx
 from pydantic import ValidationError
 
 from config import Settings, settings
-from litellm_registry import delete_registered_vector_store, register_vector_store
+from litellm_registry import (
+    LiteLLMRegistryError,
+    delete_registered_vector_store,
+    register_vector_store,
+)
 
 
 class ProviderSettingTests(unittest.TestCase):
@@ -29,6 +33,33 @@ class ProviderSettingTests(unittest.TestCase):
 
 
 class RegistrationProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_registration_403_exposes_litellm_reason_and_permission_hint(self):
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.post.return_value = httpx.Response(
+            403,
+            json={"detail": "Not allowed to access this endpoint"},
+        )
+        with (
+            patch.object(settings, "vector_store_api_base", "http://pgvector.test"),
+            patch.object(settings, "litellm_user_scoped_vector_stores", False),
+            patch.object(settings.embedding, "base_url", "http://litellm.test"),
+            patch("litellm_registry.httpx.AsyncClient", return_value=client),
+            patch("litellm_registry._get_private_registry_team_id", new_callable=AsyncMock),
+        ):
+            with self.assertRaises(LiteLLMRegistryError) as raised:
+                await register_vector_store(
+                    vector_store_id="store-id",
+                    name="test store",
+                    owner_key="owner-key",
+                    owner_info={"user_id": "creator", "team_id": "team-a"},
+                )
+
+        self.assertIn("HTTP 403", str(raised.exception))
+        self.assertIn("Not allowed to access this endpoint", str(raised.exception))
+        self.assertIn("POST /vector_store/new", str(raised.exception))
+        self.assertIn("allowed_routes", str(raised.exception))
+
     async def test_registration_uses_provider_and_matching_api_base(self):
         cases = (
             ("pg_vector", "http://pgvector.test/", "http://pgvector.test"),

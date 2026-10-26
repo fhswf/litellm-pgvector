@@ -1,12 +1,41 @@
+import logging
 from typing import Any
 
 import httpx
 
 from config import settings
 
+logger = logging.getLogger(__name__)
+
 
 class LiteLLMRegistryError(RuntimeError):
     """A registration or access-control operation failed in LiteLLM."""
+
+
+def _response_error_detail(response: httpx.Response) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = response.text
+
+    if isinstance(payload, dict):
+        detail = next(
+            (
+                payload[key]
+                for key in ("detail", "error", "message")
+                if payload.get(key)
+            ),
+            None,
+        )
+    else:
+        detail = payload
+
+    if detail is None:
+        return None
+    if not isinstance(detail, str):
+        detail = str(detail)
+    detail = " ".join(detail.split())
+    return detail[:500] or None
 
 
 def _litellm_base_url() -> str:
@@ -182,6 +211,9 @@ async def register_vector_store(
 
     team_scoped = bool(owner_info.get("team_id"))
     user_scoped = not team_scoped and settings.litellm_user_scoped_vector_stores
+    registration_scope = (
+        "team" if team_scoped else "user" if user_scoped else "registry"
+    )
     registration_headers = (
         {"Authorization": f"Bearer {owner_key}"}
         if team_scoped or user_scoped else _registry_headers()
@@ -214,9 +246,27 @@ async def register_vector_store(
                 json=request_body,
             )
         if response.status_code not in (200, 201):
-            raise LiteLLMRegistryError(
-                f"LiteLLM vector-store registration returned HTTP {response.status_code}"
+            detail = _response_error_detail(response)
+            logger.error(
+                "LiteLLM vector-store registration failed: "
+                "vector_store_id=%s status=%s provider=%s scope=%s",
+                vector_store_id,
+                response.status_code,
+                provider,
+                registration_scope,
             )
+            message = (
+                f"LiteLLM vector-store registration returned HTTP "
+                f"{response.status_code}"
+            )
+            if detail:
+                message += f": {detail}"
+            if response.status_code == 403:
+                message += (
+                    ". Check that the selected registration key is allowed to "
+                    "call POST /vector_store/new in LiteLLM (role or allowed_routes)"
+                )
+            raise LiteLLMRegistryError(message)
         registered = True
         if not team_scoped and not user_scoped:
             await _grant_store_to_owner_key(
@@ -230,14 +280,22 @@ async def register_vector_store(
             try:
                 await delete_registered_vector_store(vector_store_id)
             except LiteLLMRegistryError:
-                pass
+                logger.exception(
+                    "Could not roll back LiteLLM vector-store registration "
+                    "after a request failure: vector_store_id=%s",
+                    vector_store_id,
+                )
         raise error from exc
     except Exception:
         if registered:
             try:
                 await delete_registered_vector_store(vector_store_id)
             except LiteLLMRegistryError:
-                pass
+                logger.exception(
+                    "Could not roll back LiteLLM vector-store registration "
+                    "after a registration failure: vector_store_id=%s",
+                    vector_store_id,
+                )
         raise
 
 
